@@ -39,7 +39,7 @@ This will run Spain on a small circuit. If the ```--test``` command succeeded, y
 ## Building ONNX circuits (25-45 minutes)
 The circuits for the ONNX computations (LayerNorm, Softmax, GPT-2, etc.) are larger and must be built and exported before use (this ensures that re-runs involving these models do not take too much time). 
 
-All ONNX files are included in the repo, with the exception of GPT-2, which must downloaded from Zenodo (see "Files" of the latest version under the Zenodo record).
+All ONNX files are included in the repo, with the exception of GPT-2, which must downloaded from Zenodo (see "Files" of the latest version under the [Zenodo record](https://zenodo.org/records/20090538).
 ```
 cp /PATH/TO/DOWNLOAD/gpt2-seq-2.onnx circuit/onnx/gpt2-seq-2.onnx
 cp /PATH/TO/DOWNLOAD/gpt2-seq-32.onnx circuit/onnx/gpt2-seq-32.onnx
