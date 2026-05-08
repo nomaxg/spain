@@ -1,0 +1,20 @@
+[package]
+name = "otti-adapter"
+version = "0.1.0"
+edition = "2024"
+default-run = "otti-adapter"
+
+[dependencies]
+lpsolve = "1.0.1"
+mps = "1.0.0"
+sprs = "0.11.4"
+parse = { path = "../parse" }
+stream = { path = "../stream" }
+spain = { path = "../spain" }
+protocol = { path = "../protocol" }
+clap = { version = "4.5.53", features = ["derive"] }
+dark = { path = "../dark" }
+env_logger = "0.11.8"
+rayon = "1.10.0"
+model = { path = "../model" }
+rug = "1.27.0"

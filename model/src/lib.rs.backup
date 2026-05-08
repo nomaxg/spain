@@ -1,0 +1,262 @@
+use ndarray::Array;
+use ndarray_rand::{rand_distr::Uniform, RandomExt};
+use serde::Deserialize;
+use std::path::Path;
+use tract_onnx::prelude::*;
+use tract_onnx::prelude::{tvec, Graph, RunnableModel, Tensor, TypedFact, TypedOp};
+
+type Model = RunnableModel<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
+
+// #[derive(Debug, Clone, Deserialize, PartialEq)]
+// pub enum OutputLabel {
+//     #[serde(rename = "witness", alias = "_witness")]
+//     Witness,
+//     #[serde(rename = "secondary")]
+//     Secondary,
+//     #[serde(rename = "secondary_witness")]
+//     WitnessSecondary,
+//     #[serde(rename = "secondary_constraint")]
+//     SecondaryConstraint,
+//     #[serde(rename = "public")]
+//     Public,
+//     #[serde(rename = "primary", alias = "_primary")]
+//     Primary,
+//     #[serde(rename = "secondary_primary")]
+//     SecondaryPrimary,
+//     #[serde(rename = "publicsecondary")]
+//     PublicSecondary,
+// }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ModelConfig {
+    pub model_name: String,
+    // pub primary_output_labels: Vec<OutputLabel>,
+    // pub secondary_output_labels: Vec<OutputLabel>,
+    // pub num_random_values: usize,
+}
+
+pub struct ModelRunner {
+    pub original_model:
+        RunnableModel<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>,
+    pub primary_model:
+        RunnableModel<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>,
+    pub secondary_model:
+        RunnableModel<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>,
+    // pub primary_output_labels: Vec<OutputLabel>,
+    // pub secondary_output_labels: Vec<OutputLabel>,
+    // pub randomness: Vec<f32>,
+}
+
+impl ModelRunner {
+    pub fn new<P: AsRef<Path>>(model_dir: P) -> anyhow::Result<Self> {
+        let model_dir = model_dir.as_ref();
+        let original_path = model_dir.join("original_model.onnx");
+        let primary_path = model_dir.join("primary_model.onnx");
+        let secondary_path = model_dir.join("secondary_model.onnx");
+        // let meta_path = model_dir.join("meta.json");
+
+        // Load ONNX models
+        let original_model = tract_onnx::onnx()
+            .model_for_path(&original_path)?
+            .into_typed()?
+            .into_optimized()?
+            .into_runnable()?;
+        let primary_model = tract_onnx::onnx()
+            .model_for_path(&primary_path)?
+            .into_typed()?
+            .into_optimized()?
+            .into_runnable()?;
+        let secondary_model = tract_onnx::onnx()
+            .model_for_path(&secondary_path)?
+            .into_typed()?
+            .into_optimized()?
+            .into_runnable()?;
+
+        // Load and parse meta.json
+        // let meta_str = fs::read_to_string(&meta_path)?;
+        // let config: ModelConfig = serde_json::from_str(&meta_str)?;
+
+        // // Generate randomness
+        // let randomness: Vec<f32> = (0..config.num_random_values)
+        //     .map(|_| rand::random::<f32>())
+        //     .collect();
+
+        Ok(Self {
+            original_model,
+            primary_model,
+            secondary_model,
+            // primary_output_labels: config.primary_output_labels,
+            // secondary_output_labels: config.secondary_output_labels,
+            // randomness,
+        })
+    }
+
+    fn random_input_for_model(model: &Model) -> anyhow::Result<Vec<Tensor>> {
+        let input_outlets = model.model().input_outlets()?;
+        let mut inputs = Vec::new();
+
+        for input_fact in input_outlets {
+            let fact = model.model().outlet_fact(*input_fact)?;
+            let shape: Vec<usize> = fact.shape.as_concrete().unwrap().to_vec();
+            let data = match fact.datum_type {
+                DatumType::F32 => Array::random(shape, Uniform::new(0.0f32, 1.0f32)).into_tensor(),
+                DatumType::F64 => Array::random(shape, Uniform::new(0.0f64, 1.0f64)).into_tensor(),
+                DatumType::I64 => Array::random(shape, Uniform::new(0i64, 1i64)).into_tensor(),
+                _ => panic!("Unsupported input type: {:?}", fact.datum_type),
+            };
+            inputs.push(data);
+        }
+
+        Ok(inputs)
+    }
+
+    pub fn run_model(model: &Model) {
+        let input_tensors = Self::random_input_for_model(model).expect("random input failed");
+
+        // Create input map with proper names
+        let input_names = model.model().input_outlets().unwrap();
+        let mut input_map = std::collections::HashMap::new();
+        for (outlet, tensor) in input_names.iter().zip(input_tensors.iter()) {
+            let name = model.model().node(outlet.node).name.clone();
+            input_map.insert(name, tensor.clone());
+        }
+
+        // Prepare inputs in model order
+        let mut tv_inputs = tvec![];
+        for outlet in input_names {
+            let name = model.model().node(outlet.node).name.clone();
+            let tensor = input_map.get(&name).expect("missing input");
+            tv_inputs.push(tensor.clone().into_tvalue());
+        }
+
+        let _ = model.run(tv_inputs).expect("model run failed");
+    }
+
+    pub fn run_native_inference(&self) {
+        Self::run_model(&self.original_model);
+    }
+
+    pub fn run_inflated_inference(&self) {
+        Self::run_model(&self.primary_model);
+        Self::run_model(&self.secondary_model);
+    }
+
+    // pub fn run_primary_model(&self, input: Option<Tensor>) -> (Vec<f64>, Vec<Tensor>) {
+    //     let input_tensors = match input {
+    //         Some(t) => vec![t],
+    //         None => Self::random_input_for_model(&self.primary_model).expect("random input failed"),
+    //     };
+    //
+    //     // Create input map with proper names
+    //     let input_names = self.primary_model.model().input_outlets().unwrap();
+    //     let mut input_map = std::collections::HashMap::new();
+    //     for (i, (outlet, tensor)) in input_names.iter().zip(input_tensors.iter()).enumerate() {
+    //         let name = self.primary_model.model().node(outlet.node).name.clone();
+    //         input_map.insert(name, tensor.clone());
+    //     }
+    //
+    //     // Prepare inputs in model order
+    //     let mut tv_inputs = tvec![];
+    //     for outlet in input_names {
+    //         let name = self.primary_model.model().node(outlet.node).name.clone();
+    //         let tensor = input_map.get(&name).expect("missing input");
+    //         tv_inputs.push(tensor.clone().into_tvalue());
+    //     }
+    //
+    //     let outputs = self.primary_model.run(tv_inputs).expect("model run failed");
+    //     let mut witness = Vec::new();
+    //     let mut secondary = Vec::new();
+    //     for (i, label) in self.primary_output_labels.iter().enumerate() {
+    //         let out = &outputs[i];
+    //         match label {
+    //             OutputLabel::Witness => {
+    //                 let arr = out.to_array_view::<f32>().unwrap();
+    //                 witness.extend(arr.iter().cloned());
+    //             }
+    //             OutputLabel::Secondary => {
+    //                 secondary.push(out.clone().into_tensor());
+    //             }
+    //             OutputLabel::WitnessSecondary => {
+    //                 let arr = out.to_array_view::<f32>().unwrap();
+    //                 witness.extend(arr.iter().cloned());
+    //                 secondary.push(out.clone().into_tensor());
+    //             }
+    //             _ => {}
+    //         }
+    //     }
+    //
+    //     // Construct Z vector in R1CS format: [1, inputs, witness_values]
+    //     let mut z_vector = Vec::new();
+    //     z_vector.push(1.0);
+    //     for tensor in input_tensors {
+    //         let input_array = tensor.to_array_view::<i64>().unwrap();
+    //         for &val in input_array.iter() {
+    //             z_vector.push(val as f64);
+    //         }
+    //     }
+    //
+    //     // 3. Add primary witness values
+    //     z_vector.extend(witness.iter().map(|&x| x as f64));
+    //
+    //     (z_vector, secondary)
+    // }
+    //
+    // pub fn run_secondary_model(&self, inputs: Vec<Tensor>) -> (Vec<f32>, Vec<f32>) {
+    //     // Assign randomness to input "R", others to "Input_{index}"
+    //     let mut input_map = std::collections::HashMap::new();
+    //     let r_tensor = Tensor::from(Array1::from(self.randomness.clone()))
+    //         .into_shape(&[self.randomness.len(), 1])
+    //         .expect("reshape randomness to [N,1] failed");
+    //     input_map.insert("R".to_string(), r_tensor);
+    //     for (i, t) in inputs.into_iter().enumerate() {
+    //         input_map.insert(format!("Input_{i}"), t);
+    //     }
+    //     // Prepare inputs in model order
+    //     let input_names = self.secondary_model.model().input_outlets().unwrap();
+    //     let mut tv_inputs = tvec![];
+    //     for outlet in input_names {
+    //         let name = self.secondary_model.model().node(outlet.node).name.clone();
+    //         let tensor = input_map.get(&name).expect("missing input");
+    //         tv_inputs.push(tensor.clone().into_tvalue());
+    //     }
+    //     let outputs = self
+    //         .secondary_model
+    //         .run(tv_inputs)
+    //         .expect("secondary run failed");
+    //     let mut secondary_witness = Vec::new();
+    //     let mut secondary_constraints = Vec::new();
+    //     for (i, label) in self.secondary_output_labels.iter().enumerate() {
+    //         let out = &outputs[i];
+    //         let arr = out.to_array_view::<f32>().unwrap();
+    //         match label {
+    //             OutputLabel::Witness | OutputLabel::WitnessSecondary => {
+    //                 secondary_witness.extend(arr.iter().cloned());
+    //             }
+    //             OutputLabel::SecondaryConstraint => {
+    //                 secondary_constraints.extend(arr.iter().cloned());
+    //             }
+    //             _ => {}
+    //         }
+    //     }
+    //     (secondary_witness, secondary_constraints)
+    // }
+    //
+    // /// Returns (z_vector, secondary_constraints)
+    // pub fn get_full_outputs(&self, input: Option<Tensor>) -> (Vec<f64>, Vec<f32>) {
+    //     // Run primary model to get witness, secondary inputs, and z_vector
+    //     let (mut z_vector, secondary_inputs) = self.run_primary_model(input);
+    //
+    //     // Run secondary model to get secondary witness and constraint values
+    //     // let (secondary_witness, secondary_constraints) = self.run_secondary_model(secondary_inputs);
+    //
+    //     // Add secondary witness values to Z vector
+    //     // z_vector.extend(secondary_witness.iter().map(|&x| x as f64));
+    //
+    //     (z_vector, vec![])
+    // }
+    //
+    // pub fn get_randomness(&self) -> &Vec<f32> {
+    //     &self.randomness
+    // }
+}
+

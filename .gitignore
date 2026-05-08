@@ -1,0 +1,11 @@
+/**/target
+.DS_Store
+/**/*.svg
+.*.swp
+/**/*.pkl
+/**/export
+.vscode
+dark_*
+.venv
+prover_cost.json
+verifier_cost.json

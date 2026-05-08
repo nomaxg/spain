@@ -1,0 +1,26 @@
+[package]
+name = "model"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ndarray = "0.17.2"
+ndarray-rand = "0.16.0"
+anyhow = "1.0"
+rug = "1.28.1"
+onnx-extractor = "0.3.3"
+clap = { version = "4.5.57", features = ["derive"] }
+criterion = "0.6.0"
+num-traits = "0.2"
+twofloat = "0.8.4"
+i256 = { version = "0.2.2", features = ["i512"] }
+
+[dev-dependencies]
+tract-onnx = "0.22.1"
+
+[[bench]]
+name = "bench_types"
+harness = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verbose)'] }

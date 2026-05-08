@@ -1,0 +1,13 @@
+[package]
+name = "stream"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+criterion = "0.6.0"
+memmap2 = "0.9.5"
+rand = "0.9.1"
+
+[[bench]]
+name = "bench"
+harness = false

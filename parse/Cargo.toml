@@ -1,0 +1,12 @@
+[package]
+name = "parse"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rug = "1.27.0"
+ff = { path = "../ff" }
+stream = { path = "../stream" }
+model = { path = "../model" }
+log = "0.4.27"
+i256 = { version = "0.2.3", features = ["i512"] }

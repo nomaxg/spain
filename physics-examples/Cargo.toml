@@ -1,0 +1,14 @@
+[package]
+name = "physics-examples"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+model = { path = "../model" }
+ndarray = "0.17.2"
+parse = { path = "../parse" }
+stream = { path = "../stream" }
+spain = { path = "../spain" }
+protocol = { path = "../protocol" }
+clap = { version = "4.5.4", features = ["derive"] }
+env_logger = "0.11"

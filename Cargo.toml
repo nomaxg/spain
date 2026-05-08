@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "ff", "dark", "parse", "iop", "spain", "stream", "model", "otti-adapter", "fp-spartan-exp", "protocol", "physics-examples"
+]
