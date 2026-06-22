@@ -1,6 +1,3 @@
-#![allow(incomplete_features)]
-use std::u32;
-
 use ff::ops_128::M128;
 use ff::poly::{int::MLE as IntMLE, mont::MLE};
 use rug::Complete;
@@ -67,11 +64,10 @@ pub fn commit_chunked_pippenger(poly: IntMLE, public: &PublicParams) -> ChunkedC
 
     let mut comms = Vec::with_capacity(num_chunks);
     let shift = public.int_shift_base();
-    let pad_comm = public
+    let pad_comm = *public
         .initial_pad_comm
         .as_ref()
-        .expect("initial_pad_comm not initialized; call verifier_compute_const_comms first")
-        .clone();
+        .expect("initial_pad_comm not initialized; call verifier_compute_const_comms first");
 
     for chunk_start in (0..len).step_by(chunk_size) {
         let evals_chunk = &poly.evals[chunk_start..chunk_start + chunk_size];
@@ -91,7 +87,7 @@ pub fn commit_chunked_pippenger(poly: IntMLE, public: &PublicParams) -> ChunkedC
             &public.pippenger_bases[..chunk_size],
             &padded_chunk,
         );
-        let mut unpadded = c.clone();
+        let mut unpadded = c;
         public.mont.div_assign(&mut unpadded, &pad_comm);
         comms.push(unpadded);
     }
@@ -157,7 +153,7 @@ impl ProverState {
             let (cl, cr) = self.poly_split_comm(&fl_int, &fr_int, public);
             (Some(cl), Some(cr))
         };
-        let (y_l, y_r) = self.poly_split_eval(&fl, &fr, &public);
+        let (y_l, y_r) = self.poly_split_eval(&fl, &fr, public);
 
         // Fold polys based on challenges
         self.update_polys(
@@ -187,6 +183,7 @@ impl ProverState {
     }
 
     // Compute new evaluations by folding the "left" and "right" splits of the int_poly/mont_poly with the verifier's challenge alpha
+    #[allow(clippy::too_many_arguments)]
     pub fn update_polys(
         &mut self,
         fl: MLE,
@@ -201,7 +198,7 @@ impl ProverState {
         let int_shift = public.uint_shift_base().pow(self.round as u32);
         let mont_shift = mont.from_bigint(int_shift.clone());
         self.mont_poly = Some(fl.fold(&mont, &fr, mont_shift, alpha_p));
-        self.int_poly = Some(fl_int.fold(&fr_int, &int_shift, &alpha_int));
+        self.int_poly = Some(fl_int.fold(&fr_int, &int_shift, alpha_int));
     }
 
     // Poly split phase of the DARK protocol

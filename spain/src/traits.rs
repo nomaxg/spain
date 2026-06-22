@@ -57,6 +57,18 @@ impl ToI1024 for i128 {
     }
 }
 
+impl ToI1024 for I256 {
+    fn to_i1024(self) -> I1024 {
+        I1024::from_str_radix(self.to_string().as_str(), 10).unwrap()
+    }
+}
+
+impl ToI1024 for I512 {
+    fn to_i1024(self) -> I1024 {
+        I1024::from_str_radix(self.to_string().as_str(), 10).unwrap()
+    }
+}
+
 impl ToI512 for I256 {
     fn to_i512(self) -> I512 {
         I512::from_str_radix(self.to_string().as_str(), 10).unwrap()

@@ -123,8 +123,9 @@ impl MLE {
             .evals
             .iter()
             .map(|mval| {
-                let native = mont.to_normal(*mval);
-                Integer::from(native)
+                //let native = mont.to_normal(*mval);
+                mont.to_integer(*mval)
+                //Integer::from(native)
             })
             .collect();
 

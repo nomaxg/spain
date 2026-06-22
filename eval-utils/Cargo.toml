@@ -1,5 +1,5 @@
 [package]
-name = "fp-spartan-exp"
+name = "eval-utils"
 version = "0.1.0"
 edition = "2024"
 

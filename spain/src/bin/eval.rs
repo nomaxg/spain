@@ -73,14 +73,15 @@ fn main() {
         precision: cli.precision,
         q_bits: cli.q_bits,
         batch_size: cli.batch_size,
+        spartan_poly: false,
     };
 
     if cli.measure_setup {
-        measure_setup_time(wit_exec, config);
+        measure_setup_time::<F128, _, i128>(wit_exec, config);
         return;
     }
 
-    let mut result = stateful_simulate_with_config(wit_exec, config);
+    let mut result = stateful_simulate_with_config::<F128, _, i128>(wit_exec, config);
     result.model_name = cli.model;
     result.batch_size = cli.batch_size;
 

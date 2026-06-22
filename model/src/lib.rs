@@ -13,7 +13,6 @@ use onnx_extractor::{DataType, OnnxModel};
 use std::clone::Clone;
 use std::collections::HashMap;
 use std::fmt::Debug;
-use std::io::{self, Write};
 use std::ops::{Add, Div, Mul, Sub};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -282,7 +281,6 @@ where
             input_tensor.data = input.get(&tensor_name).unwrap().data.clone();
         }
         let ops: Vec<_> = self.model.execution_order().unwrap().into_iter().collect();
-        eprintln!("Executing {} ops: ", ops.len());
         for op in ops.iter() {
             let op_timer = Instant::now();
             match op.op_type.as_str() {
@@ -487,10 +485,7 @@ where
                     .to_owned()
                     + op_timer.elapsed(),
             );
-            eprint!(".");
-            io::stderr().flush().unwrap();
         }
-        eprintln!();
         let mut ret: HashMap<String, ArrayD<T>> = HashMap::new();
         for tensor_name in self
             .model

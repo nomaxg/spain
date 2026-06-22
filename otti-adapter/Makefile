@@ -1,17 +1,21 @@
 HOST ?= 127.0.0.1
 PORT ?= 9000
-MPS_PATH ?= ./datasets/sc105.mps
+MPS_PATH ?= ./datasets/scagr7.mps
 BATCH_SIZE ?= 1
 SCALE_FACTOR_BITS ?= 50
-MAX_EPSILON ?= 0.1
-CHUNK_SIZE ?= 4
+MAX_EPSILON ?= 0.0000000002
+CHUNK_SIZE ?= 1
 Q_BITS ?= 30000
 PRECISION ?= 128
+OTTI_SID ?= false
+PHASE_BREAKDOWN ?= true
 
 PROVER_ARGS = \
 	--mps-path $(MPS_PATH) \
 	--batch-size $(BATCH_SIZE) \
-	--scale-factor-bits $(SCALE_FACTOR_BITS)
+	--scale-factor-bits $(SCALE_FACTOR_BITS) \
+	--otti-sid $(OTTI_SID) \
+	--phase-breakdown $(PHASE_BREAKDOWN)
 
 VERIFIER_ARGS = \
 	--mps-path $(MPS_PATH) \
@@ -20,7 +24,9 @@ VERIFIER_ARGS = \
 	--max-epsilon $(MAX_EPSILON) \
 	--chunk-size $(CHUNK_SIZE) \
 	--q-bits $(Q_BITS) \
-	--precision $(PRECISION)
+	--precision $(PRECISION) \
+	--otti-sid $(OTTI_SID) \
+	--phase-breakdown $(PHASE_BREAKDOWN)
 
 build_bins:
 	cargo build --release --bin otti-prover --bin otti-verifier

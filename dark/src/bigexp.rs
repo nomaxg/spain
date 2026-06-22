@@ -4,6 +4,7 @@
 use crate::rsagroup::RSAGroup;
 use rug::Integer;
 
+#[derive(Default)] // make clippy happy
 pub struct IntExp;
 
 impl IntExp {
@@ -23,6 +24,7 @@ impl IntExp {
     }
 }
 
+#[derive(Default)] // make clippy happy
 pub struct NaiveExp;
 
 impl NaiveExp {
@@ -100,10 +102,10 @@ impl CombExp {
             }
         }
         // compress inner buckets
-        for idx in 1..buckets.len() {
+        for bucket in buckets.iter_mut().skip(1) {
             let mut acc = RSAGroup::new(1);
             let mut first = true;
-            for v in buckets[idx].iter().rev() {
+            for v in bucket.iter().rev() {
                 if !first {
                     for _ in 0..16 {
                         acc = acc.clone() * acc.clone();
@@ -114,14 +116,14 @@ impl CombExp {
                     first = false;
                 }
             }
-            buckets[idx] = vec![(acc, !first)];
+            *bucket = vec![(acc, !first)];
         }
         // accumulate outer buckets
         let mut res = RSAGroup::new(1);
-        for idx in 1..buckets.len() {
+        for (idx, bucket) in buckets.iter().enumerate().skip(1) {
             // res *= buckets[idx]^{idx}
-            if buckets[idx][0].1 {
-                let acc = buckets[idx][0].0.pow_u64(idx as u64);
+            if bucket[0].1 {
+                let acc = bucket[0].0.pow_u64(idx as u64);
                 res = res * acc;
             }
         }
@@ -143,10 +145,9 @@ pub struct SplitExp {
 
 impl SplitExp {
     pub fn new(max_len: usize, splits: usize) -> Self {
-        // let start = std::time::Instant::now();
         let mut helper = Vec::new();
         let mut g = RSAGroup::new(2);
-        let b = 64 * ((max_len + splits - 1) / splits);
+        let b = max_len.div_ceil(splits) * 64;
         // print b
         println!("SplitExp: b = {}", b);
         helper.push(g.clone());
@@ -156,26 +157,16 @@ impl SplitExp {
             }
             helper.push(g.clone());
         }
-        // let elapsed = start.elapsed();
-        // println!(" Setup 1 | {:?}", elapsed);
-        // print helper
-        /*println!("SplitExp helper precomputed:");
-        for (i, h) in helper.iter().enumerate() {
-            println!("  helper[{}] = {}", i, h);
-        }*/
-        // let start = std::time::Instant::now();
         let mut precomputed = Vec::new();
         for i in 0..(1 << splits) {
             let mut acc = RSAGroup::new(1);
-            for j in 0..splits {
+            for (j, h) in helper.iter().enumerate() {
                 if (i >> j) & 1 == 1 {
-                    acc = acc * helper[j].clone();
+                    acc = acc * h.clone();
                 }
             }
             precomputed.push(acc);
         }
-        // let elapsed = start.elapsed();
-        // println!(" Setup 2 | {:?}", elapsed);
         SplitExp {
             max_len,
             splits,
@@ -186,7 +177,7 @@ impl SplitExp {
         // ensure precomputed is large enough
         assert!(v.len() <= self.max_len);
         let mut res = RSAGroup::new(1);
-        let gap = (self.max_len + self.splits - 1) / self.splits;
+        let gap = self.max_len.div_ceil(self.splits);
         // loop over gap size in reverse
         for i in (0..gap).rev() {
             for j in (0..64).rev() {
@@ -226,21 +217,17 @@ mod tests {
         let max_len = (1 << 10) - 23;
         let int_exp = IntExp::new();
         let naive_exp = NaiveExp::new();
-        let comb_exp = CombExp::new(max_len, 4);
         let split_exp = SplitExp::new(max_len, 8);
         // get random vector
         let v = rand_u64_vec(max_len);
         // compute with int exp
         let res_int = int_exp.exp(&v);
         // compute naively
-        let _res_naive = naive_exp.exp(&v);
-        // compute with comb
-        let _res_comb = comb_exp.exp(&v);
+        let res_naive = naive_exp.exp(&v);
         // compute with split
         let res_split = split_exp.exp(&v);
         // check that lit matches all
-        //assert_eq!(res_int.value, res_naive.value);
-        //assert_eq!(res_int.value, res_comb.value);
+        assert_eq!(res_int.value, res_naive.value);
         assert_eq!(res_int.value, res_split.value);
     }
 }

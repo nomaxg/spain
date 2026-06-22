@@ -26,7 +26,7 @@ pub fn run_with_cli(cli: Cli) {
     match cli.role {
         Role::Prover => run_actor(&mut prover, JsonBroker::new()).unwrap(),
         Role::Verifier => run_actor(&mut verifier, JsonBroker::new()).unwrap(),
-    }
+    };
 }
 
 #[derive(Debug, Parser)]
@@ -94,6 +94,7 @@ impl SharedConfig {
     }
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DarkMessage {
     Setup(PublicParams),
@@ -104,6 +105,7 @@ pub enum DarkMessage {
     RoundResponse(RoundClaim),
 }
 
+#[derive(Default)]
 pub struct DarkProver {
     public: Option<PublicParams>,
     state: ProverState,

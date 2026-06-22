@@ -1,8 +1,9 @@
-use model::{AFloat, FromPrimitive, HighPrecision};
+use model::HighPrecision;
 use parse::{
     generalized::{HighPrecisionInt, InjectionInfo},
     mat::Matrix,
 };
+use rand::{Rng, SeedableRng, rngs::StdRng};
 
 use crate::{
     inputs::{Metadata, R1CSMatrices},
@@ -20,33 +21,37 @@ pub struct SyntheticR1CS<T: HighPrecisionInt> {
 }
 
 impl<T: HighPrecisionInt> SyntheticR1CS<T> {
-    pub fn new(num_constraints: usize, num_inputs: usize, scale_factor_bits: usize) -> Self {
-        let scale_factor = AFloat::from_i128(2_i128.pow(scale_factor_bits as u32)).unwrap();
+    pub fn new(num_constraints: usize, num_inputs: usize, _scale_factor_bits: usize) -> Self {
         // synthetic R1CS generation logic copied from Spartan: https://github.com/microsoft/Spartan/blob/3a2c097cab39ffa191560f445440a41ed40db5b3/src/r1cs.rs#L160
         // produce a random assignment z, one variable per constraint
         let z_size = 1 + num_constraints + num_inputs; // 1 for the constant term, and each constraint introduces a new variable
+        let mut rng = StdRng::seed_from_u64(synthetic_seed(num_constraints, num_inputs));
+        let upper = 1_i128 << 31;
+        let lower = 1_i128 << 30;
 
         let z_values = (0..z_size)
-            .map(|_| rand::random::<f64>())
+            .map(|_| T::from_i128(rng.random_range(lower..=upper)))
             .collect::<Vec<_>>();
 
-        let mut a_entries: Vec<(usize, usize, f64)> = Vec::new();
-        let mut b_entries: Vec<(usize, usize, f64)> = Vec::new();
-        let mut c_entries: Vec<(usize, usize, f64)> = Vec::new();
+        let mut a_entries: Vec<(usize, usize, T)> = Vec::new();
+        let mut b_entries: Vec<(usize, usize, T)> = Vec::new();
+        let mut c_entries: Vec<(usize, usize, T)> = Vec::new();
 
         for i in 0..num_constraints {
             // Derive R1CS entries based on satisfying assignment
             let a_idx = i % z_size;
             let b_idx = (i + 1) % z_size;
-            let c_idx = (i + 2) % z_size;
+            let c_idx = a_idx;
 
-            a_entries.push((i, a_idx, 1.0));
-            b_entries.push((i, b_idx, 1.0));
+            let alpha = rng.random_range(lower..=upper);
+            let beta = rng.random_range(lower..=upper);
+            let a_coeff = T::from_i128(alpha);
+            let b_coeff = T::from_i128(beta);
+            let c_coeff = T::from_i128(alpha * beta) * z_values[b_idx];
 
-            let ab = z_values[a_idx] * z_values[b_idx];
-            let c_val = z_values[c_idx];
-
-            c_entries.push((i, c_idx, ab / c_val));
+            a_entries.push((i, a_idx, a_coeff));
+            b_entries.push((i, b_idx, b_coeff));
+            c_entries.push((i, c_idx, c_coeff));
         }
 
         let a = Matrix::from_coo(a_entries, z_size, num_constraints);
@@ -57,10 +62,10 @@ impl<T: HighPrecisionInt> SyntheticR1CS<T> {
         Self {
             num_constraints,
             num_inputs,
-            z: Matrix::from_f64(&z, scale_factor.clone(), None),
-            a: Matrix::from_f64(&a, scale_factor.clone(), None),
-            b: Matrix::from_f64(&b, scale_factor.clone(), None),
-            c: Matrix::from_f64(&c, scale_factor.clone(), None),
+            z,
+            a,
+            b,
+            c,
         }
     }
 
@@ -74,6 +79,10 @@ impl<T: HighPrecisionInt> SyntheticR1CS<T> {
             ..Default::default()
         }
     }
+}
+
+fn synthetic_seed(num_constraints: usize, num_inputs: usize) -> u64 {
+    (num_constraints as u64).wrapping_mul(num_inputs as u64)
 }
 
 impl<P, T> R1CSInstance<P, T> for SyntheticR1CS<T>

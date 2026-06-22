@@ -2,8 +2,6 @@
 #![feature(generic_const_exprs)]
 pub mod actor;
 pub mod arith;
-pub mod arkbigexp;
-pub mod arkgroup;
 pub mod bigexp;
 pub mod bigrsa;
 pub mod prover;

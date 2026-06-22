@@ -1,4 +1,8 @@
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    io::{self, Write},
+    path::PathBuf,
+};
 
 use crate::bigrsa::{generate_rsa_group, precompute_bases, Mont as BigMont};
 use ff::{ops_128::Mont, prime_128::rand_prime, FieldMont};
@@ -95,7 +99,11 @@ impl PublicParams {
     pub fn build_pippenger_bases(&mut self) {
         let len = self.chunk_size();
         let num_vars = len.trailing_zeros() as usize;
-        let base_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let base_dir = PathBuf::from(if cfg!(feature = "nyuhpc") {
+            "./"
+        } else {
+            env!("CARGO_MANIFEST_DIR")
+        });
         let prefix = "dark_pip_base_";
         let candidates: Vec<(usize, PathBuf)> = match fs::read_dir(&base_dir) {
             Ok(entries) => entries
@@ -144,10 +152,7 @@ impl PublicParams {
                         len
                     );
                     while loaded.len() < len {
-                        let last = loaded
-                            .last()
-                            .expect("cached pippenger bases are empty")
-                            .clone();
+                        let last = *loaded.last().expect("cached pippenger bases are empty");
                         let next = self.mont.exp(&last, &self.q);
                         loaded.push(next);
                     }
@@ -170,6 +175,8 @@ impl PublicParams {
                 let computed = precompute_bases(&self.mont, &self.rsa_gen, &self.q, len);
                 let serialized =
                     bincode::serialize(&computed).expect("failed to serialize pippenger bases");
+                eprintln!("{:?}", &target_cache_path);
+                io::stderr().flush().unwrap();
                 fs::write(&target_cache_path, serialized)
                     .expect("failed to persist pippenger bases");
                 computed

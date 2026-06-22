@@ -97,7 +97,10 @@ impl<P: SumCheckPoly> ProverState<P> {
                 let evals = self.final_evals(r.unwrap());
                 prover_time += prover_start.elapsed();
                 let verifier_start = std::time::Instant::now();
-                P::check_final_evals(&self.mont, &p, r.unwrap(), aux, &evals)
+                let mut check_aux = Vec::with_capacity(aux.len() + challenges.len());
+                check_aux.extend_from_slice(aux);
+                check_aux.extend_from_slice(&challenges);
+                P::check_final_evals(&self.mont, &p, r.unwrap(), &check_aux, &evals)
                     .expect("Final evaluations did not match");
                 verifier_time += verifier_start.elapsed();
                 return (
@@ -112,5 +115,35 @@ impl<P: SumCheckPoly> ProverState<P> {
         }
         // return the challenges and final evaluations
         //(challenges, self.final_evals(r.unwrap()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProverState;
+    use ff::{FieldMont, outer_eq::OuterPolyEq, poly::cmont::MLE, prime_128::rand_prime};
+    use rand::{SeedableRng, rngs::StdRng};
+    use stream::bigvec::BigVec;
+
+    #[test]
+    fn simulate_outer_poly_eq() {
+        let num_vars = 4usize;
+        let size = 1usize << num_vars;
+        let mut rng = StdRng::seed_from_u64(7);
+        let mont = FieldMont::new(rand_prime(&mut rng));
+
+        let az = MLE::from_buffer(BigVec::new(size).unwrap(), vec![0..size]);
+        let bz = MLE::from_buffer(BigVec::new(size).unwrap(), vec![0..size]);
+        let cz = MLE::from_buffer(BigVec::new(size).unwrap(), vec![0..size]);
+        let tau = (0..num_vars)
+            .map(|i| mont.to_mont((i as u128) + 2))
+            .collect::<Vec<_>>();
+
+        let poly = OuterPolyEq::from_buffers(az, bz, cz, &tau, &mont);
+        let mut prover = ProverState::new(poly, mont);
+        let (challenges, evals, _) = prover.simulate(mont.zero(), &tau, false);
+
+        assert_eq!(challenges.len(), num_vars);
+        assert_eq!(evals.len(), 4);
     }
 }

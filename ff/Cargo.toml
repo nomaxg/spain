@@ -10,7 +10,10 @@ rug = "1.21.0"
 stream = { path = "../stream" }
 serde = { version = "1.0.228", features = ["derive"] }
 i256 = { version = "0.2.2"}
+ark-ff = "0.6.0"
+ark-serialize = "0.6.0"
 
 [[bench]]
 name = "mle"
 harness = false
+

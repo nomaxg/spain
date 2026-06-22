@@ -1,6 +1,6 @@
 use std::ops::Mul;
 
-use i256::U256;
+use i256::{I256, U256};
 use rug::Integer;
 use serde::{Deserialize, Serialize};
 // traditional modular arithmetic operations
@@ -76,6 +76,19 @@ impl Mont {
         let n = self.to_mont(x.unsigned_abs());
         if x < 0 { self.neg(n) } else { n }
     }
+    #[inline(always)]
+    pub fn from_i256(&self, x: I256) -> M128 {
+        let is_negative = x < I256::from(0);
+        let abs_x = if is_negative { -x } else { x };
+        let limbs = abs_x.to_le_limbs();
+        let base = self.to_mont(1u128 << 64);
+        let mut n = self.zero();
+        for limb in limbs.iter().rev() {
+            n = self.mul(n, base);
+            n = self.add(n, self.to_mont(*limb as u128));
+        }
+        if is_negative { self.neg(n) } else { n }
+    }
     // exclusively for testing
     #[inline(always)]
     pub fn literal(&self, x: u128) -> M128 {
@@ -102,6 +115,11 @@ impl Mont {
     pub fn to_normal(&self, x: M128) -> u128 {
         // reduce to normal form
         self.reduce(U256::from(x.0)).0
+    }
+    // convert from montgomery form to normal form as an Integer
+    #[inline(always)]
+    pub fn to_integer(&self, x: M128) -> Integer {
+        Integer::from(self.to_normal(x))
     }
     // get zero in montgomery form
     #[inline(always)]

@@ -8,6 +8,7 @@ ff = { path = "../ff" }
 iop = { path = "../iop" }
 protocol = { path = "../protocol" }
 dark = { path = "../dark" }
+eval-utils = { path = "../eval-utils" }
 ndarray-rand = "0.16.0"
 parse = { path = "../parse" }
 stream = { path = "../stream" }
@@ -21,10 +22,6 @@ env_logger = "0.11.8"
 clap = { version = "4.5.53", features = ["derive"] }
 anyhow = "1.0.99"
 ndarray = "0.17.2"
-
-[[bin]]
-name = "main"
-path = "src/main.rs"
 
 [dev-dependencies]
 criterion = "0.5"

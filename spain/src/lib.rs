@@ -1,4 +1,6 @@
 pub mod actor;
+pub mod broker;
+pub mod executor;
 pub mod inputs;
 pub mod prover;
 pub mod simulate;
@@ -26,9 +28,12 @@ pub struct EvaluationResult {
     // Prover metrics
     pub proof_size: usize,
     pub total_prover_time: Duration,
+    pub total_prover_actor_time: Duration,
     // Verifier metrics
     pub total_verifier_time: Duration,
+    pub total_verifier_actor_time: Duration,
     // Phase breakdown: Prover
+    pub prover_preprocessing_time: Duration,
     pub prover_compute_witness: Duration,
     pub prover_compute_square_error_time: Duration,
     pub prover_prepare_outer_sc_time: Duration,
@@ -38,7 +43,10 @@ pub struct EvaluationResult {
     pub prover_poly_commit_time: Duration,
     pub prover_poly_eval_time: Duration,
     pub prover_misc_time: Duration,
+    pub prover_serialization_time: Duration,
+    pub prover_bytes_sent: usize,
     // Phase breakdown: Verifier
+    pub verifier_setup_time: Duration,
     pub verifier_epsilon_check_time: Duration,
     pub verifier_sample_time: Duration,
     pub verifier_run_outer_sc_time: Duration,
@@ -48,6 +56,8 @@ pub struct EvaluationResult {
     pub verifier_claim_interpolate_time: Duration,
     pub verifier_smart_eval_time: Duration,
     pub verifier_misc_time: Duration,
+    pub verifier_serialization_time: Duration,
+    pub verifier_bytes_sent: usize,
 }
 
 impl EvaluationResult {
@@ -74,10 +84,18 @@ impl EvaluationResult {
 
     pub fn report_prover_time(&self) {
         eprintln!("Prover time: {:#?} \n", self.total_prover_time);
+        eprintln!(
+            "Prover actorized time: {:#?} \n",
+            self.total_prover_actor_time
+        );
     }
 
     pub fn report_verifier_time(&self) {
         eprintln!("Verifier time: {:#?} \n", self.total_verifier_time);
+        eprintln!(
+            "Verifier actorized time: {:#?} \n",
+            self.total_verifier_actor_time
+        );
         if self.batch_size > 1 {
             eprintln!(
                 "Verifier time per instance: {:#?} \n",
@@ -88,37 +106,64 @@ impl EvaluationResult {
 
     pub fn report_prover_phases(&self) {
         eprintln!("Prover phase breakdown:");
-        eprintln!("  Compute witness: {:#?}", self.prover_compute_witness);
+        eprintln!("  Compute w: {:#?}", self.prover_compute_witness);
         eprintln!("  Compute J: {:#?}", self.prover_compute_square_error_time);
         eprintln!(
-            "  Prepare outer SC: {:#?}",
-            self.prover_prepare_outer_sc_time
-        );
-        eprintln!("  Run outer SC: {:#?}", self.prover_run_outer_sc_time);
-        eprintln!(
-            "  Prepare inner SC: {:#?}",
+            "  Sum-check: {:#?}",
             self.prover_prepare_inner_sc_time
+                + self.prover_run_inner_sc_time
+                + self.prover_prepare_outer_sc_time
+                + self.prover_run_outer_sc_time
+                + self.prover_misc_time
         );
-        eprintln!("  Run inner SC: {:#?}", self.prover_run_inner_sc_time);
-        eprintln!("  DARK commit: {:#?}", self.prover_poly_commit_time);
-        eprintln!("  DARK eval: {:#?}", self.prover_poly_eval_time);
+        eprintln!("  Commit to w: {:#?}", self.prover_poly_commit_time);
+        eprintln!("  Open commitment: {:#?}", self.prover_poly_eval_time);
+        eprintln!("  Time total: {:#?}", self.total_prover_time);
+        eprintln!("Proof size: {:#?}", self.prover_bytes_sent)
     }
 
     pub fn report_verifier_phases(&self) {
         eprintln!("Verifier phase breakdown:");
-        eprintln!("  Epsilon check: {:#?}", self.verifier_epsilon_check_time);
-        eprintln!("  Sample: {:#?}", self.verifier_sample_time);
-        eprintln!("  Run outer SC: {:#?}", self.verifier_run_outer_sc_time);
-        eprintln!("  Run inner SC: {:#?}", self.verifier_run_inner_sc_time);
-        eprintln!("  DARK eval: {:#?}", self.verifier_poly_eval_time);
+        eprintln!("  Setup: {:#?}", self.verifier_setup_time);
         eprintln!(
-            "  Claim interpolation: {:#?}",
+            "  Steps 4-6: {:#?}",
+            self.verifier_epsilon_check_time
+                + self.verifier_sample_time
+                + self.verifier_run_inner_sc_time
+                + self.verifier_run_outer_sc_time
+                + self.verifier_misc_time
+        );
+        eprintln!("  Open commitment: {:#?}", self.verifier_poly_eval_time);
+        eprintln!("  Miscellaneous: {:#?}", self.verifier_misc_time);
+        eprintln!(
+            "  Test w consistency: {:#?}",
             self.verifier_claim_interpolate_time
         );
         eprintln!(
             "  A/B/C matrix evaluation: {:#?}",
             self.verifier_smart_eval_time
         );
+        eprintln!("  Time total: {:#?}", self.total_verifier_time);
+    }
+
+    pub fn zklp_prover_time(&self) -> Duration {
+        self.prover_prepare_inner_sc_time
+            + self.prover_prepare_outer_sc_time
+            + self.prover_run_outer_sc_time
+            + self.prover_run_inner_sc_time
+            + self.prover_poly_commit_time
+            + self.prover_poly_eval_time
+            + self.prover_misc_time
+    }
+
+    pub fn zklp_verifier_time(&self) -> Duration {
+        self.verifier_sample_time
+            + self.verifier_run_outer_sc_time
+            + self.verifier_run_inner_sc_time
+            + self.verifier_poly_eval_time
+            + self.verifier_misc_time
+            + self.verifier_claim_interpolate_time
+            + self.verifier_smart_eval_time
     }
 }
 

@@ -55,8 +55,8 @@ impl<'de, const N: usize> Deserialize<'de> for MontInt<N> {
                 A: SeqAccess<'de>,
             {
                 let mut limbs = [0u64; N];
-                for i in 0..N {
-                    limbs[i] = seq
+                for (i, limb) in limbs.iter_mut().enumerate() {
+                    *limb = seq
                         .next_element()?
                         .ok_or_else(|| serde::de::Error::invalid_length(i, &self))?;
                 }
@@ -137,7 +137,7 @@ where
         MontInt(BigInt::zero())
     }
     pub fn one(&self) -> MontInt<N> {
-        MontInt(self.r.clone())
+        MontInt(self.r)
     }
     // a = a + b
     // copied almost verbatim from arkworks
@@ -159,7 +159,7 @@ where
     // copied almost verbatim from arkworks
     pub fn neg_in_place(&self, a: &mut MontInt<N>) {
         if !a.0.is_zero() {
-            let mut tmp = self.m.clone();
+            let mut tmp = self.m;
             tmp.sub_with_borrow(&a.0);
             a.0 = tmp;
         }
@@ -298,7 +298,7 @@ where
     // copied almost verbatim from arkworks
     pub fn to_montgomery(&self, a: &Integer) -> MontInt<N> {
         if a.is_zero() {
-            return MontInt(BigInt::zero());
+            MontInt(BigInt::zero())
         } else {
             let mut a_mont = MontInt(Self::rug_to_big(a));
             self.mul_assign(&mut a_mont, &MontInt(self.r2));
@@ -308,7 +308,7 @@ where
     // convert from montgomery form to normal form
     // copied almost verbatim from arkworks
     pub fn to_normal(&self, a: &MontInt<N>) -> Integer {
-        let mut r = a.0.clone();
+        let mut r = a.0;
         // Montgomery Reduction
         for i in 0..N {
             let k = r.0[i].wrapping_mul(self.inv);
@@ -329,7 +329,7 @@ where
     // slow big-exp via square-and-multiply
     pub fn exp(&self, base: &MontInt<N>, exp: &Integer) -> MontInt<N> {
         let mut res = self.one();
-        let mut base_acc = base.clone();
+        let mut base_acc = *base;
         let mut exp_copy = exp.clone();
         while exp_copy > 0 {
             if exp_copy.is_odd() {
@@ -371,7 +371,7 @@ pub fn generate_rsa_group(bits: usize) -> ((Integer, Integer), Integer) {
     let key = RsaPrivateKey::new(&mut rng, bits).expect("failed to generate a key");
     let p = biguint_to_rug(&key.primes()[0]);
     let q = biguint_to_rug(&key.primes()[1]);
-    let m = biguint_to_rug(&key.n());
+    let m = biguint_to_rug(key.n());
     ((p, q), m)
 }
 pub fn precompute_bases<const N: usize>(
@@ -384,7 +384,7 @@ where
     [(); 2 * N]:,
 {
     let mut table = Vec::with_capacity(len);
-    table.push(g.clone());
+    table.push(*g);
     table.push(mont.exp(g, q));
     for i in 2..len {
         let last = &table[i - 1];
@@ -416,7 +416,7 @@ where
     // window size
     let w = 8;
     let bucket_size = 1 << w;
-    let num_windows = (max_len + w - 1) / w;
+    let num_windows = max_len.div_ceil(w);
     // initialize accumulator to 1
     let mut acc = mont.one();
     // process windows from high to low
@@ -432,17 +432,15 @@ where
             let mut bit_chunk = 0usize;
             for j in 0..w {
                 let bit_index = i * w + j;
-                if bit_index < exp.significant_bits() as usize {
-                    if exp.get_bit(bit_index as u32) {
-                        bit_chunk |= 1 << j;
-                    }
+                if bit_index < exp.significant_bits() as usize && exp.get_bit(bit_index as u32) {
+                    bit_chunk |= 1 << j;
                 }
             }
             if bit_chunk != 0 {
                 if let Some(bucket_val) = &mut buckets[bit_chunk] {
                     mont.mul_assign(bucket_val, base);
                 } else {
-                    buckets[bit_chunk] = Some(base.clone());
+                    buckets[bit_chunk] = Some(*base);
                 }
             }
         }
@@ -451,9 +449,9 @@ where
         for j in (1..bucket_size).rev() {
             if let Some(bucket_val) = &buckets[j] {
                 running = Some(match running {
-                    None => bucket_val.clone(),
+                    None => *bucket_val,
                     Some(mut r) => {
-                        mont.mul_assign(&mut r, &bucket_val);
+                        mont.mul_assign(&mut r, bucket_val);
                         r
                     }
                 });

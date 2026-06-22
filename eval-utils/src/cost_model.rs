@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use libspartan::{Instance, SNARKGens, SNARK};
+use libspartan::{Instance, SNARK, SNARKGens};
 use merlin::Transcript;
 use serde::{Deserialize, Serialize};
 
@@ -56,15 +56,15 @@ impl VerifierCostModel {
     }
 }
 
-fn fit_regression(
+pub fn fit_regression(
     num_constraints: &[usize],
     avg_times_ms: &[f64],
-    is_verifier_model: bool,
+    is_sqrt_model: bool,
 ) -> (f64, f64, f64) {
     assert_eq!(num_constraints.len(), avg_times_ms.len());
     assert!(!num_constraints.is_empty(), "need at least one sample");
 
-    let x_values: Vec<f64> = if is_verifier_model {
+    let x_values: Vec<f64> = if is_sqrt_model {
         num_constraints.iter().map(|&n| (n as f64).sqrt()).collect()
     } else {
         num_constraints.iter().map(|&n| n as f64).collect()
