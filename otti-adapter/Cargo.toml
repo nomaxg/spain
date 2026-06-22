@@ -18,3 +18,5 @@ env_logger = "0.11.8"
 rayon = "1.10.0"
 model = { path = "../model" }
 rug = "1.27.0"
+statrs = "0.18.0"
+spzk = { package = "spartan-zkinterface", path = "../spartan-zkinterface" }

@@ -13,6 +13,10 @@ use sprs::{CsMat, CsVec, TriMat};
 use std::{collections::HashMap, fs, ops::Range, path::Path};
 use stream::bigvec::BigVec;
 
+pub mod cons_adapter;
+pub mod otti_exec;
+pub use otti_exec::OttiExec;
+
 type SparseMat = CsMat<f64>;
 type Witness = Vec<f64>;
 type SolutionVectors = (Vec<f64>, Vec<f64>, Vec<f64>, Vec<f64>); // primal, eq_dual, leq_dual, geq_dual
@@ -39,6 +43,7 @@ pub struct LPSpain {
     cons: Vec<Constraint>,
     dataset_path: String,
     witness: Option<Matrix<i128>>,
+    solution: Option<SolutionVectors>,
 }
 
 // Loads MPS file and converts to Model<f64>
@@ -188,10 +193,13 @@ impl LPSpain {
             num_geqs,
             cons: vec![],
             witness: None,
+            solution: None,
         };
+        lp.solution = Some(lp.solve());
         lp.generate_constraint();
         lp
     }
+
     pub fn generate_constraint(&mut self) {
         // Witness vector layout:
         // [1 | x | y_eq | y_leq | y_geq | sqrt_x | sqrt_y_leq | sqrt_y_geq | sqrt_leq_slack | sqrt_geq_slack | sqrt_dual_slack]
@@ -324,6 +332,7 @@ impl LPSpain {
         constraints.push((primal_obj_lc, vec![(0, 1.0)], dual_obj_lc));
         self.cons = constraints;
     }
+
     pub fn solve(&self) -> SolutionVectors {
         let mut problem =
             ProblemBuilder::from_fixedmps_file(self.dataset_path.clone(), MPSOptions::empty())
@@ -375,6 +384,108 @@ impl LPSpain {
         assert_eq!(constr_idx, row_duals.len());
         (primal, eq_dual, leq_dual, geq_dual)
     }
+
+    pub fn check_opt_certifiate(&self, sols: &SolutionVectors) {
+        let (primal, eq_dual, leq_dual, geq_dual) = sols;
+        // Check that primal is correct w.r.t to our parsed lp
+        let x_vec = CsVec::new(self.num_vars, (0..self.num_vars).collect(), primal.clone());
+        // Check equality constraints
+        let ax_eq = (&self.equality_matrix * &x_vec).to_dense();
+        for (i, val) in ax_eq.into_iter().enumerate() {
+            assert!((val - self.b_eq[i]).abs() < 1e-8);
+        }
+        // Check <= constraints
+        let ax_leq = (&self.leq_matrix * &x_vec).to_dense();
+        for (i, val) in ax_leq.iter().enumerate() {
+            assert!(*val <= self.b_leq[i] + 1e-8);
+        }
+        // Check >= constraints
+        let ax_geq = (&self.geq_matrix * &x_vec).to_dense();
+        for (i, val) in ax_geq.iter().enumerate() {
+            assert!(*val + 1e-8 >= self.b_geq[i]);
+        }
+        // Assert that x is non-negative
+        for val in primal.iter() {
+            assert!(*val >= -1e-8);
+        }
+        // Check the dual is correct w.r.t to our parsed lp
+        let z = eq_dual;
+        let y_leq = leq_dual;
+        let y_geq = geq_dual;
+
+        for (i, &yi) in y_leq.iter().enumerate() {
+            assert!(yi <= 1e-8, "leq dual y_leq[{}] positive", i);
+        }
+        for (i, &yi) in y_geq.iter().enumerate() {
+            assert!(yi >= -1e-8, "geq dual y_geq[{}] negative", i);
+        }
+        // Complementary slackness is implied by the optimality checks below, so no direct check here.
+        let mut dual_sum = vec![0.0; self.num_vars];
+        for (row_idx, row) in self.equality_matrix.outer_iterator().enumerate() {
+            let y_val = z[row_idx];
+            if y_val == 0.0 {
+                continue;
+            }
+            for (col_idx, coeff) in row.iter() {
+                dual_sum[col_idx] += coeff * y_val;
+            }
+        }
+        for (row_idx, row) in self.leq_matrix.outer_iterator().enumerate() {
+            let y_val = y_leq[row_idx];
+            if y_val == 0.0 {
+                continue;
+            }
+            for (col_idx, coeff) in row.iter() {
+                dual_sum[col_idx] += coeff * y_val;
+            }
+        }
+        for (row_idx, row) in self.geq_matrix.outer_iterator().enumerate() {
+            let y_val = y_geq[row_idx];
+            if y_val == 0.0 {
+                continue;
+            }
+            for (col_idx, coeff) in row.iter() {
+                dual_sum[col_idx] += coeff * y_val;
+            }
+        }
+        // Dual feasibility (minimization form): A^T y <= c
+        for j in 0..self.num_vars {
+            let aty = dual_sum[j];
+            assert!(
+                aty <= self.c[j] + 1e-8,
+                "dual feasibility violated (A^T y > c) at j={}: A^T y = {}, c_j={}",
+                j,
+                aty,
+                self.c[j]
+            );
+        }
+        // Strong duality: b^T y = c^T x
+        let primal_obj: f64 = self
+            .c
+            .iter()
+            .zip(primal.iter())
+            .map(|(cj, xj)| cj * xj)
+            .sum();
+        let dual_obj_leq: f64 = y_leq
+            .iter()
+            .zip(self.b_leq.iter())
+            .map(|(y, b)| y * b)
+            .sum();
+        let dual_obj_geq: f64 = y_geq
+            .iter()
+            .zip(self.b_geq.iter())
+            .map(|(y, b)| y * b)
+            .sum();
+        let dual_obj_eq: f64 = z.iter().zip(self.b_eq.iter()).map(|(zv, b)| zv * b).sum();
+        let dual_obj: f64 = dual_obj_leq + dual_obj_geq + dual_obj_eq;
+        assert!(
+            (dual_obj - primal_obj).abs() <= 1e-8,
+            "strong duality violated: dual={}, primal={}",
+            dual_obj,
+            primal_obj
+        );
+    }
+
     fn witness_width(&self) -> usize {
         1 + self.num_vars
             + self.num_eqs
@@ -387,6 +498,7 @@ impl LPSpain {
             + self.num_geqs
             + self.num_vars
     }
+
     pub fn get_metadata(&self) -> Metadata {
         let num_public_values = 1 + self.num_vars + self.num_eqs + self.num_leqs + self.num_geqs;
         let total_len = self.witness_width();
@@ -400,9 +512,11 @@ impl LPSpain {
             secondary_output_labels: vec![],
         }
     }
+
     pub fn get_ranges(&self) -> Vec<Range<usize>> {
         self.get_metadata().get_ranges()
     }
+
     // Generate A/B/C Spain R1CS matrices from LPSpain constraints
     pub fn generate_r1cs_matrices(
         &self,
@@ -444,6 +558,7 @@ impl LPSpain {
 
         (a, b, c)
     }
+
     pub fn get_witness_raw(&self, sols: &SolutionVectors) -> Witness {
         let (x, z_eq, z_leq, z_geq) = sols;
         let mut witness = Vec::with_capacity(
@@ -537,9 +652,12 @@ impl LPSpain {
 
 impl R1CSInstance<AFloat, i128> for LPSpain {
     fn compute_commit_witness(&mut self, scale_factor: AFloat, batch_size: usize) -> Matrix<i128> {
-        let ret = self
-            .build_witness(&self.solve(), scale_factor)
-            .repeat_column(batch_size);
+        let mut ret = Vec::new();
+        for _ in 0..batch_size {
+            ret.push(self.build_witness(self.solution.as_ref().unwrap(), scale_factor.clone()));
+        }
+        let mut ret = Matrix::stack_dense_matrices_horizontally(ret.iter().collect());
+        ret.set_ranges(&self.get_ranges());
         self.witness = Some(ret.clone());
         ret.extract_rows(&ret.ranges().unwrap()[1])
     }
@@ -574,7 +692,6 @@ mod tests {
 
     use model::FromPrimitive;
     use spain::simulate::stateful_simulate;
-    use sprs::CsVec;
 
     use super::*;
 
@@ -603,98 +720,13 @@ mod tests {
     fn test_stateful_simulate() {
         let dataset = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("datasets/bnl1.mps");
         let lp = LPSpain::parse_mps(dataset.to_str().expect("dataset path should be valid"));
-        stateful_simulate(lp, None);
+        stateful_simulate::<model::AFloat, _, i128>(lp, None);
     }
 
     fn smoke_test_lp(dataset: &str) {
         let mut lp = LPSpain::parse_mps(&dataset);
         let sols = lp.solve();
-        let (primal, eq_dual, leq_dual, geq_dual) = sols.clone();
-        // Check that primal is correct w.r.t to our parsed lp
-        let x_vec = CsVec::new(lp.num_vars, (0..lp.num_vars).collect(), primal.clone());
-        // Check equality constraints
-        let ax_eq = (&lp.equality_matrix * &x_vec).to_dense();
-        for (i, val) in ax_eq.into_iter().enumerate() {
-            assert!((val - lp.b_eq[i]).abs() < 1e-8);
-        }
-        // Check <= constraints
-        let ax_leq = (&lp.leq_matrix * &x_vec).to_dense();
-        for (i, val) in ax_leq.iter().enumerate() {
-            assert!(*val <= lp.b_leq[i] + 1e-8);
-        }
-        // Check >= constraints
-        let ax_geq = (&lp.geq_matrix * &x_vec).to_dense();
-        for (i, val) in ax_geq.iter().enumerate() {
-            assert!(*val + 1e-8 >= lp.b_geq[i]);
-        }
-        // Assert that x is non-negative
-        for val in primal.iter() {
-            assert!(*val >= -1e-8);
-        }
-        // Check the dual is correct w.r.t to our parsed lp
-        let z = eq_dual;
-        let y_leq = leq_dual;
-        let y_geq = geq_dual;
-
-        for (i, &yi) in y_leq.iter().enumerate() {
-            assert!(yi <= 1e-8, "leq dual y_leq[{}] positive", i);
-        }
-        for (i, &yi) in y_geq.iter().enumerate() {
-            assert!(yi >= -1e-8, "geq dual y_geq[{}] negative", i);
-        }
-        // Complementary slackness is implied by the optimality checks below, so no direct check here.
-        // build dense y and z as CsVec to use sprs
-        let mut dual_sum = vec![0.0; lp.num_vars];
-        for (row_idx, row) in lp.equality_matrix.outer_iterator().enumerate() {
-            let y_val = z[row_idx];
-            if y_val == 0.0 {
-                continue;
-            }
-            for (col_idx, coeff) in row.iter() {
-                dual_sum[col_idx] += coeff * y_val;
-            }
-        }
-        for (row_idx, row) in lp.leq_matrix.outer_iterator().enumerate() {
-            let y_val = y_leq[row_idx];
-            if y_val == 0.0 {
-                continue;
-            }
-            for (col_idx, coeff) in row.iter() {
-                dual_sum[col_idx] += coeff * y_val;
-            }
-        }
-        for (row_idx, row) in lp.geq_matrix.outer_iterator().enumerate() {
-            let y_val = y_geq[row_idx];
-            if y_val == 0.0 {
-                continue;
-            }
-            for (col_idx, coeff) in row.iter() {
-                dual_sum[col_idx] += coeff * y_val;
-            }
-        }
-        // Dual feasibility (minimization form): A^T y <= c
-        for j in 0..lp.num_vars {
-            let aty = dual_sum[j];
-            assert!(
-                aty <= lp.c[j] + 1e-8,
-                "dual feasibility violated (A^T y > c) at j={}: A^T y = {}, c_j={}",
-                j,
-                aty,
-                lp.c[j]
-            );
-        }
-        // Strong duality: b^T y = c^T x
-        let primal_obj: f64 = lp.c.iter().zip(primal.iter()).map(|(cj, xj)| cj * xj).sum();
-        let dual_obj_leq: f64 = y_leq.iter().zip(lp.b_leq.iter()).map(|(y, b)| y * b).sum();
-        let dual_obj_geq: f64 = y_geq.iter().zip(lp.b_geq.iter()).map(|(y, b)| y * b).sum();
-        let dual_obj_eq: f64 = z.iter().zip(lp.b_eq.iter()).map(|(zv, b)| zv * b).sum();
-        let dual_obj: f64 = dual_obj_leq + dual_obj_geq + dual_obj_eq;
-        assert!(
-            (dual_obj - primal_obj).abs() <= 1e-8,
-            "strong duality violated: dual={}, primal={}",
-            dual_obj,
-            primal_obj
-        );
+        lp.check_opt_certifiate(&sols);
         // Check R1CS constraints
         lp.generate_constraint();
         println!("Generated {} constraints", lp.cons.len());

@@ -6,8 +6,9 @@ use dark::public::PublicParams;
 use dark::verifier::{RoundChallenge, VerifierState as DarkVerifierState};
 use ff::inner2::InnerPoly;
 use ff::outer::OuterPoly;
+use ff::outer_eq::OuterPolyEq;
 use ff::{FieldElem, FieldMont, prime_128};
-use i256::{I512, I1024};
+use i256::I512;
 use iop::verifier::VerifierState as SCVerifierState;
 use model::HighPrecision;
 use ndarray::Array;
@@ -16,22 +17,70 @@ use ndarray_rand::rand_distr::Normal;
 use parse::generalized::{HighPrecisionInt, InjectionInfo};
 use parse::mat::{Matrix, MatrixData};
 use rug::{Float, Integer};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::inputs::{Metadata, R1CSMatrices};
-use crate::prover::{error_to_mont_i1024, get_scale_mont, scale_factor};
-use crate::traits::{MatrixIntOps, R1CSInstance, ToI512, ToI1024};
+use crate::prover::{deterministic_tau, error_to_mont, get_scale_mont, scale_factor};
+use crate::traits::{MatrixIntOps, R1CSInstance, ToI512};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ZRangeOpening {
+#[derive(Debug, Clone)]
+pub struct ZRangeOpening<T> {
     pub range_index: usize,
     pub width: usize,
-    pub values: Vec<i128>,
+    pub values: Vec<T>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SerializableZRangeOpening {
+    range_index: usize,
+    width: usize,
+    values: Vec<String>,
+}
+
+impl<T> Serialize for ZRangeOpening<T>
+where
+    T: ToString,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        SerializableZRangeOpening {
+            range_index: self.range_index,
+            width: self.width,
+            values: self.values.iter().map(|v| v.to_string()).collect(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de, T> Deserialize<'de> for ZRangeOpening<T>
+where
+    T: FromStr,
+    <T as FromStr>::Err: std::fmt::Debug,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = SerializableZRangeOpening::deserialize(deserializer)?;
+        Ok(Self {
+            range_index: raw.range_index,
+            width: raw.width,
+            values: raw
+                .values
+                .into_iter()
+                .map(|v| {
+                    T::from_str(&v).map_err(|err| serde::de::Error::custom(format!("{err:?}")))
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
 }
 
 #[derive(Debug)]
 pub struct VerifierState<
-    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512 + ToI1024,
+    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512,
     P: HighPrecision,
     E: R1CSInstance<P, T>,
 > where
@@ -47,11 +96,12 @@ pub struct VerifierState<
     pub r1cs_matrices_int: Option<R1CSMatrices<T>>,
     pub mont: Option<FieldMont>,
     pub wit_exec: E,
-    pub error: Option<I1024>,
+    pub error: Option<I512>,
     pub num_chunks: usize,
     pub metadata: Metadata,
     pub randomness: Option<Vec<P>>,
     pub inject_info: Option<InjectionInfo>,
+    pub spartan_poly: bool,
     // SC-specific state
     pub r_col: Vec<FieldElem>,
     pub inner_state: Option<SCVerifierState>,
@@ -70,7 +120,7 @@ pub struct VerifierState<
 }
 
 impl<
-    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512 + ToI1024,
+    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512,
     P: HighPrecision,
     E: R1CSInstance<P, T>,
 > VerifierState<T, P, E>
@@ -85,10 +135,15 @@ where
         q_bits: usize,
         precision: u16,
         num_chunks: usize,
+        spartan_poly: bool,
         wit_exec: E,
         metadata: Metadata,
     ) -> Self {
-        let scale_factor: P = scale_factor(scale_factor_bits);
+        let scale_factor: P = if spartan_poly {
+            P::from_i128(1).unwrap()
+        } else {
+            scale_factor(scale_factor_bits)
+        };
 
         let mut ret = VerifierState {
             max_epsilon,
@@ -114,6 +169,7 @@ where
             dark_claim: None,
             r1cs_matrices_int: None,
             inject_info: None,
+            spartan_poly,
             metadata,
             wit_exec,
             _phantom_p: std::marker::PhantomData::<P>,
@@ -140,14 +196,18 @@ where
         self.r1cs_matrices_int = Some(matrices);
     }
 
-    pub fn epsilon_check(&mut self, squared_error: &I1024) {
-        self.error = Some(*squared_error);
-        epsilon_check_i1024(
-            squared_error,
-            self.scale_factor_bits,
-            self.max_epsilon,
-            true,
-        );
+    pub fn epsilon_check(&mut self, squared_error: &I512) {
+        if self.spartan_poly {
+            self.error = Some(I512::from(0));
+        } else {
+            self.error = Some(*squared_error);
+            epsilon_check(
+                squared_error,
+                self.scale_factor_bits,
+                self.max_epsilon,
+                true,
+            );
+        }
     }
 
     pub fn sample_mont(&mut self) -> FieldMont {
@@ -172,6 +232,10 @@ where
         (r1, r2)
     }
 
+    pub fn num_constraints(&self) -> usize {
+        self.r1cs_matrices_int.as_ref().unwrap().a.height()
+    }
+
     pub fn mont(&self) -> FieldMont {
         *self
             .mont
@@ -181,17 +245,21 @@ where
 
     pub fn prepare_outer_sc(&mut self) {
         let mont = self.mont();
-        let error_mont = error_to_mont_i1024(
-            &mont,
-            *self.error.as_ref().expect("error not set"),
-            self.scale_mont.expect("scale denominator not set"),
-            true,
-        );
+        let outer_claim = if self.spartan_poly {
+            mont.zero()
+        } else {
+            error_to_mont(
+                &mont,
+                *self.error.as_ref().expect("error not set"),
+                self.scale_mont.expect("scale denominator not set"),
+                true,
+            )
+        };
 
         self.outer_state = Some(SCVerifierState::new(
             self.r1cs_matrices_int.as_ref().unwrap().a.height(),
-            4,
-            error_mont,
+            if self.spartan_poly { 3 } else { 4 },
+            outer_claim,
             mont,
         ));
     }
@@ -212,12 +280,18 @@ where
             .outer_state
             .as_ref()
             .expect("Outer sum-check state not initialized, call prepare_outer_sc")
-            .challenges()
-            .last()
-            .expect("should have a final challenge");
-        // Cache the sum claim for the inner sum-check
-        self.outer_claims = evals.to_owned();
-        OuterPoly::check_final_evals(&self.mont.unwrap(), p, *r, &[], evals)
+            .challenges();
+        if self.spartan_poly {
+            let tau = deterministic_tau(&self.mont.unwrap(), r.len());
+            // Cache claims for the inner sum-check (exclude eq claim)
+            self.outer_claims = evals[1..evals.len()].to_vec();
+            let aux = [tau.clone(), r.clone()].concat();
+            OuterPolyEq::check_final_evals(&self.mont.unwrap(), p, *r.last().unwrap(), &aux, evals)
+        } else {
+            // Cache claims for the inner sum-check.
+            self.outer_claims = evals.to_owned();
+            OuterPoly::check_final_evals(&self.mont.unwrap(), p, *r.last().unwrap(), &[], evals)
+        }
     }
 
     pub fn prepare_inner_sc(&mut self, num_vars: usize) {
@@ -367,7 +441,7 @@ where
         );
     }
 
-    pub fn witness_claim_check(&self, z_openings: &[ZRangeOpening]) {
+    pub fn witness_claim_check(&self, z_openings: &[ZRangeOpening<T>]) {
         let mont = self.mont();
         let scale_den = mont.inv(self.scale_mont.expect("scale mont not set"));
         let has_randomness = self.metadata.num_random_values > 0;
@@ -403,22 +477,26 @@ where
         );
     }
 
-    pub fn final_verify(&self, z_openings: &[ZRangeOpening]) {
+    pub fn final_verify(&self, z_openings: &[ZRangeOpening<T>]) {
         self.matrices_claim_check();
         self.witness_claim_check(z_openings);
         eprintln!("Final verification success!!!");
     }
 
-    pub fn sample_normal_randomness(&mut self) -> Vec<P> {
+    pub fn sample_normal_randomness(&mut self) -> Vec<u64> {
         let randomness = Array::random(
             vec![self.metadata.num_random_values],
             Normal::new(0., 1.).unwrap(),
         )
-        .mapv(|v| P::from_f64(v).unwrap())
         .into_iter()
         .collect::<Vec<_>>();
-        self.randomness = Some(randomness.clone());
-        randomness
+        self.randomness = Some(
+            randomness
+                .iter()
+                .map(|&v| P::from_f64(v).unwrap())
+                .collect(),
+        );
+        randomness.into_iter().map(|v| v.to_bits()).collect()
     }
 
     pub fn inject_randomness(&mut self) {
@@ -627,31 +705,6 @@ pub fn epsilon_check(
     }
 }
 
-pub fn epsilon_check_i1024(
-    squared_error: &I1024,
-    scale_factor_bits: usize,
-    max_epsilon: f64,
-    verbose: bool,
-) {
-    let num_dbg = Integer::from_str(&squared_error.to_string()).unwrap();
-    let scale8_bits = 8 * scale_factor_bits;
-    let scale8 = Integer::from(1) << scale8_bits;
-    let denom_dbg = Float::with_val(256, scale8);
-    let computed_epsilon = (num_dbg / denom_dbg).sqrt();
-    let max_epsilon = Float::with_val(256, max_epsilon);
-
-    if computed_epsilon > max_epsilon {
-        panic!(
-            "Computed model deviation {computed_epsilon} is greater than acceptable value {max_epsilon}"
-        );
-    }
-
-    if verbose {
-        eprintln!("Error epsilon: {computed_epsilon}");
-        eprintln!("{}", scale8_bits);
-    }
-}
-
 pub fn epsilon_check_rug(
     squared_error: &Integer,
     scale_factor_bits: usize,
@@ -703,10 +756,9 @@ pub fn check_r1cs_claim(
     r2: FieldElem,
     claim: FieldElem,
 ) {
-    assert!(
-        mont.add(mont.add(a_eval, mont.mul(r1, b_eval)), mont.mul(r2, c_eval)) == claim,
-        "Matrix evaluation does not match claim"
-    );
+    if mont.add(mont.add(a_eval, mont.mul(r1, b_eval)), mont.mul(r2, c_eval)) != claim {
+        panic!("WARNING: Matrix evaluation does not match claim");
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -724,9 +776,9 @@ pub fn check_claim(
     check_r1cs_claim(mont, a_eval, b_eval, c_eval, r1, r2, claim);
 }
 
-fn eval_opened_z_range(
+fn eval_opened_z_range<T: HighPrecisionInt>(
     mont: &FieldMont,
-    opening: &ZRangeOpening,
+    opening: &ZRangeOpening<T>,
     range_len: usize,
     row_evals: &[FieldElem],
     col_evals: &[FieldElem],
@@ -743,11 +795,11 @@ fn eval_opened_z_range(
     for (local_r, &row_eval) in row_evals.iter().enumerate().take(range_len) {
         let src_base = local_r * opening.width;
         let mut row_sum = mont.zero();
-        for (c, &val) in opening.values[src_base..src_base + opening.width]
+        for (c, val) in opening.values[src_base..src_base + opening.width]
             .iter()
             .enumerate()
         {
-            let value = mont.mul(mont.from_i128(val), den_mont);
+            let value = mont.mul(val.to_field_elem(mont), den_mont);
             row_sum = mont.add(row_sum, mont.mul(value, col_evals[c]));
         }
         res = mont.add(res, mont.mul(row_eval, row_sum));
@@ -867,10 +919,10 @@ pub fn check_final_claim(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn check_final_claim_from_openings(
+pub fn check_final_claim_from_openings<T: HighPrecisionInt>(
     mont: &FieldMont,
     ez1: FieldElem,
-    z_openings: &[ZRangeOpening],
+    z_openings: &[ZRangeOpening<T>],
     den_mont: FieldElem,
     z_width: usize,
     r_col: &[FieldElem],

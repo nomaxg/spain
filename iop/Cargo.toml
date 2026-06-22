@@ -9,3 +9,6 @@ ff = { path = "../ff" }
 protocol = { path = "../protocol" }
 rand = "0.9.1"
 serde = { version = "1.0.228", features = ["derive"] }
+
+[dev-dependencies]
+stream = { path = "../stream" }

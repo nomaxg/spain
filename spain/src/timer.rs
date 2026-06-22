@@ -4,6 +4,7 @@ use crate::EvaluationResult;
 
 #[derive(Debug, Clone, Copy)]
 pub enum ProverPhase {
+    Preprocessing,
     ComputeWitness,
     ComputeSquaredError,
     PrepareOuterSc,
@@ -17,6 +18,7 @@ pub enum ProverPhase {
 
 #[derive(Debug, Clone, Copy)]
 pub enum VerifierPhase {
+    Setup,
     EpsilonCheck,
     Sample,
     RunOuterSc,
@@ -68,6 +70,7 @@ impl Timer {
 
     pub fn add_prover(&mut self, phase: ProverPhase, duration: Duration) {
         match phase {
+            ProverPhase::Preprocessing => self.eval_result.prover_preprocessing_time += duration,
             ProverPhase::ComputeWitness => self.eval_result.prover_compute_witness += duration,
             ProverPhase::ComputeSquaredError => {
                 self.eval_result.prover_compute_square_error_time += duration
@@ -88,6 +91,7 @@ impl Timer {
 
     pub fn add_verifier(&mut self, phase: VerifierPhase, duration: Duration) {
         match phase {
+            VerifierPhase::Setup => self.eval_result.verifier_setup_time += duration,
             VerifierPhase::EpsilonCheck => self.eval_result.verifier_epsilon_check_time += duration,
             VerifierPhase::Sample => self.eval_result.verifier_sample_time += duration,
             VerifierPhase::RunOuterSc => self.eval_result.verifier_run_outer_sc_time += duration,

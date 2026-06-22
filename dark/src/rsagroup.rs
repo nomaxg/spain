@@ -6,26 +6,6 @@ use std::ops::{Div, Mul};
 // Basic unoptimized RSAGroup implementation.
 // https://github.com/bbuenz/dark_prototype/blob/master/rsagroup.py used as reference.
 
-// 512‐bit RSA modulus N
-// static N: Lazy<Integer> = Lazy::new(|| {
-//     Integer::from_str_radix(
-//         "\
-//         10941738641570527421809707322040357612003732945449205990913842131476349984288934784717997257891267332497625752899781833797076537244027146743531593354333897",
-//         10,
-//     )
-//     .unwrap()
-// });
-//
-//
-// lambda(N) = lcm(p-1, q-1)
-// static LAMBDA_N: Lazy<Integer> = Lazy::new(|| {
-//     Integer::from_str_radix(
-//         "\
-//         5470869320785263710904853661020178806001866472724602995456921065738174992144362770818393674165337175540345874172600954635346254942850767100886304790108738",
-//         10,
-//     )
-//     .unwrap()
-// });
 // 768‐bit RSA modulus N
 static N: Lazy<Integer> = Lazy::new(|| {
     Integer::from_str_radix(
@@ -94,7 +74,7 @@ impl RSAGroup {
     pub fn inv(&self) -> RSAGroup {
         self.value
             .clone()
-            .invert(&*N)
+            .invert(&N)
             .map(|inv| RSAGroup { value: inv })
             .expect("inversion failed, this is unlikely")
     }
@@ -108,6 +88,7 @@ impl Mul for RSAGroup {
     }
 }
 
+#[allow(clippy::suspicious_arithmetic_impl)]
 impl Div for RSAGroup {
     type Output = RSAGroup;
     fn div(self, rhs: RSAGroup) -> RSAGroup {

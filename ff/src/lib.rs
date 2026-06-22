@@ -3,6 +3,7 @@ pub mod inner2;
 pub mod ops;
 pub mod ops_128;
 pub mod outer;
+pub mod outer_eq;
 pub mod poly;
 pub mod prime;
 pub mod prime_128;
@@ -10,6 +11,7 @@ pub mod prime_128;
 // Aliases so downstream crates can switch Montgomery backends easily
 // TODO: Design/implement a trait for Mont contexts so that we can swap easily
 pub mod field {
+    use i256::I256;
     use rug::Integer;
 
     pub type FieldElem = crate::ops_128::M128;
@@ -27,17 +29,22 @@ pub mod field {
         mont.from_i128(*val)
     }
 
+    pub fn i256_to_mont(val: &I256, mont: &FieldMont) -> FieldElem {
+        mont.from_i256(*val)
+    }
+
     pub fn usize_to_mont(value: usize, mont: &FieldMont) -> FieldElem {
         mont.to_mont(value as u128)
     }
 }
 
-pub use field::{FieldElem, FieldMont, i64_to_mont, i128_to_mont, int_to_mont, usize_to_mont};
+pub use field::{
+    i128_to_mont, i256_to_mont, i64_to_mont, int_to_mont, usize_to_mont, FieldElem, FieldMont,
+};
 
 #[cfg(test)]
 mod tests {
-    use super::{field::usize_to_mont, *};
-    use stream::bigvec::BigVec;
+    use super::*;
 
     #[test]
     fn rand_prime_test() {
@@ -112,33 +119,5 @@ mod tests {
             // check that the result is 1
             assert_eq!(one, 1);
         }
-    }
-
-    #[test]
-    fn test_mle_split_mont() {
-        let mont = FieldMont::new(101);
-        let n = 3;
-        let size = 1 << n;
-        let buf: Vec<_> = (0..size).map(|i| usize_to_mont(i, &mont)).collect();
-        let bind_pts: Vec<_> = (0..n).map(|i| usize_to_mont(i * 7 + 3, &mont)).collect();
-        let mut full = poly::mont::MLE::from_buffer(BigVec::from_vec(buf.clone()), n);
-        // bind the original MLE
-        for &x in &bind_pts {
-            full.bind(x, &mont);
-        }
-        let expected = full.evals[0];
-
-        let (mut f_l, mut f_r) =
-            poly::mont::MLE::from_buffer(BigVec::from_vec(buf), n).split(&mont);
-
-        // bind the split MLEs
-        for &x in &bind_pts[1..] {
-            f_l.bind(x, &mont);
-            f_r.bind(x, &mont);
-        }
-        let x0 = bind_pts[0];
-        let reconstructed = mont.add(f_l.evals[0], mont.mul(x0, f_r.evals[0]));
-
-        assert_eq!(expected, reconstructed,);
     }
 }

@@ -7,7 +7,6 @@ use dark::{
     verifier::RoundChallenge,
 };
 use ff::{FieldElem, FieldMont};
-use i256::I1024;
 use model::HighPrecision;
 use parse::{generalized::HighPrecisionInt, mat::Matrix};
 use protocol::machine::ProtocolState;
@@ -17,13 +16,17 @@ use crate::{
     EvaluationResult,
     prover::ProverState,
     timer::{ProverPhase as ProverTimerPhase, Timer, VerifierPhase as VerifierTimerPhase},
-    traits::{MatrixIntOps, R1CSInstance, ToI512, ToI1024},
+    traits::{MatrixIntOps, R1CSInstance, ToI512},
     verifier::{VerifierState, ZRangeOpening},
 };
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum SpainMessage {
+#[serde(bound(
+    serialize = "T: ToString",
+    deserialize = "T: FromStr, <T as FromStr>::Err: std::fmt::Debug"
+))]
+pub enum SpainMessage<T = i128> {
     Setup(PublicParams),
     ErrorClaim(String),
     RequestCommitment,
@@ -31,7 +34,7 @@ pub enum SpainMessage {
     SampleMont {
         small_modulus: u128,
     },
-    Randomness(Vec<f64>),
+    Randomness(Vec<u64>),
     OuterRoundClaim(Vec<FieldElem>),
     OuterChallenge(FieldElem),
     OuterFinalEvals(Vec<FieldElem>),
@@ -51,7 +54,7 @@ pub enum SpainMessage {
     DarkChallenge(RoundChallenge),
     DarkRoundResponse(RoundClaim),
     RequestWitnessOpenings,
-    WitnessOpenings(Vec<ZRangeOpening>),
+    WitnessOpenings(Vec<ZRangeOpening<T>>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +71,7 @@ enum ProverPhase {
 }
 
 pub struct SpainProver<
-    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512 + ToI1024,
+    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512,
     P: HighPrecision,
     E: R1CSInstance<P, T>,
 > where
@@ -80,7 +83,7 @@ pub struct SpainProver<
 }
 
 impl<
-    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512 + ToI1024,
+    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512,
     P: HighPrecision,
     E: R1CSInstance<P, T>,
 > SpainProver<T, P, E>
@@ -99,11 +102,13 @@ where
         }
     }
 
-    fn initialize(&mut self, public_params: PublicParams) -> SpainMessage {
+    fn initialize(&mut self, public_params: PublicParams) -> SpainMessage<T> {
         self.timer.prover(ProverTimerPhase::ComputeWitness, || {
             self.state.compute_commit_witness()
         });
-        self.state.set_dark_public_params(public_params);
+        self.timer.prover(ProverTimerPhase::Preprocessing, || {
+            self.state.set_dark_public_params(public_params)
+        });
         self.phase = ProverPhase::WaitingRandomness;
         let comm = self
             .timer
@@ -130,21 +135,25 @@ where
     pub fn set_eval_model_name(&mut self, model_name: impl Into<String>) {
         self.timer.eval_result_mut().model_name = model_name.into();
     }
+
+    pub fn is_done(&self) -> bool {
+        self.phase == ProverPhase::Done
+    }
 }
 
 impl<
-    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512 + Into<i128> + ToI1024,
+    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512,
     P: HighPrecision,
     E: R1CSInstance<P, T>,
-> ProtocolState<SpainMessage> for SpainProver<T, P, E>
+> ProtocolState<SpainMessage<T>> for SpainProver<T, P, E>
 where
     Matrix<T>: MatrixIntOps,
 {
-    fn init_message(&mut self) -> Result<SpainMessage> {
+    fn init_message(&mut self) -> Result<SpainMessage<T>> {
         Err(anyhow!("spain prover does not initiate"))
     }
 
-    fn handle_message(&mut self, m: &SpainMessage) -> Option<SpainMessage> {
+    fn handle_message(&mut self, m: &SpainMessage<T>) -> Option<SpainMessage<T>> {
         Some(match (self.phase, m) {
             (ProverPhase::WaitingSetup, SpainMessage::Setup(public_params)) => {
                 self.initialize(public_params.clone())
@@ -152,11 +161,7 @@ where
             (ProverPhase::WaitingRandomness, SpainMessage::Randomness(randomness)) => {
                 self.phase = ProverPhase::WaitingMont;
                 self.timer.prover(ProverTimerPhase::Misc, || {
-                    let randomness = randomness
-                        .iter()
-                        .map(|&v| P::from_f64(v).unwrap())
-                        .collect::<Vec<_>>();
-                    self.state.set_randomness(randomness);
+                    self.state.set_randomness(randomness.clone());
                     self.state.inject_randomness();
                 });
                 self.timer.prover(ProverTimerPhase::ComputeWitness, || {
@@ -262,7 +267,7 @@ pub enum VerifierPhase {
 }
 
 pub struct SpainVerifier<
-    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512 + ToI1024,
+    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512,
     P: HighPrecision,
     E: R1CSInstance<P, T>,
 > where
@@ -276,7 +281,7 @@ pub struct SpainVerifier<
 }
 
 impl<
-    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512 + ToI1024,
+    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512,
     P: HighPrecision,
     E: R1CSInstance<P, T>,
 > SpainVerifier<T, P, E>
@@ -313,37 +318,39 @@ where
         self.timer.eval_result_mut().model_name = model_name.into();
     }
 
+    pub fn num_constraints(&self) -> usize {
+        self.state.num_constraints()
+    }
+
     pub fn is_done(&self) -> bool {
         matches!(self.phase, VerifierPhase::Done)
     }
 }
 
 impl<
-    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512 + ToI1024,
+    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512,
     P: HighPrecision,
     E: R1CSInstance<P, T>,
-> ProtocolState<SpainMessage> for SpainVerifier<T, P, E>
+> ProtocolState<SpainMessage<T>> for SpainVerifier<T, P, E>
 where
     Matrix<T>: MatrixIntOps,
 {
-    fn init_message(&mut self) -> Result<SpainMessage> {
-        self.state.dark_setup();
-        self.phase = VerifierPhase::WaitingCommitment;
-        Ok(SpainMessage::Setup(self.state.get_dark_public_params()))
+    fn init_message(&mut self) -> Result<SpainMessage<T>> {
+        let setup_msg = self.timer.verifier(VerifierTimerPhase::Setup, || {
+            self.state.dark_setup();
+            self.phase = VerifierPhase::WaitingCommitment;
+            SpainMessage::Setup(self.state.get_dark_public_params())
+        });
+        Ok(setup_msg)
     }
 
-    fn handle_message(&mut self, m: &SpainMessage) -> Option<SpainMessage> {
+    fn handle_message(&mut self, m: &SpainMessage<T>) -> Option<SpainMessage<T>> {
         match (self.phase, m) {
             (VerifierPhase::WaitingCommitment, SpainMessage::Commitment(comm)) => {
                 self.phase = VerifierPhase::WaitingErrorClaim;
                 let randomness = self.timer.verifier(VerifierTimerPhase::Misc, || {
                     self.state.set_commit(comm.clone());
-                    let randomness = self
-                        .state
-                        .sample_normal_randomness()
-                        .iter()
-                        .map(|v| v.to_f64().unwrap())
-                        .collect::<Vec<_>>();
+                    let randomness = self.state.sample_normal_randomness();
                     self.state.inject_randomness();
                     randomness
                 });
@@ -352,7 +359,7 @@ where
             (VerifierPhase::WaitingErrorClaim, SpainMessage::ErrorClaim(squared_error)) => {
                 self.phase = VerifierPhase::Outer;
                 let squared_error =
-                    I1024::from_str(squared_error).expect("invalid squared error encoding");
+                    i256::I512::from_str(squared_error).expect("invalid squared error encoding");
                 self.timer.verifier(VerifierTimerPhase::EpsilonCheck, || {
                     self.state.epsilon_check(&squared_error)
                 });
@@ -512,8 +519,13 @@ mod tests {
         let scale_factor = crate::prover::scale_factor::<AFloat>(scale_factor_bits);
         let wit_exec = OnnxExecutor::new(model.to_string(), path.clone(), metadata.clone(), true);
 
-        let prover_state: ProverState<i128, AFloat, OnnxExecutor<AFloat>> =
-            ProverState::new(wit_exec.clone(), scale_factor, metadata.clone(), batch_size);
+        let prover_state: ProverState<i128, AFloat, OnnxExecutor<AFloat>> = ProverState::new(
+            wit_exec.clone(),
+            scale_factor,
+            metadata.clone(),
+            batch_size,
+            false,
+        );
         let verifier_state: VerifierState<i128, AFloat, OnnxExecutor<AFloat>> = VerifierState::new(
             max_epsilon,
             batch_size,
@@ -521,6 +533,7 @@ mod tests {
             q_bits,
             precision,
             num_chunks,
+            false,
             wit_exec,
             metadata,
         );

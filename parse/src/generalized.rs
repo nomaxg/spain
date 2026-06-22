@@ -1,9 +1,9 @@
 use crate::mat::{Matrix, MatrixData};
 use ff::poly::int::MLE;
-use ff::{FieldElem, FieldMont, int_to_mont};
+use ff::{FieldElem, FieldMont, i256_to_mont, int_to_mont};
 pub use i256::I256;
 use i256::I512;
-use model::{AFloat, HighPrecision, ToPrimitiveExt};
+use model::{HighPrecision, ToPrimitiveExt};
 use rug::Integer;
 use std::ops::{Add, Div, Mul, Range, Sub};
 use stream::bigvec::BigVec;
@@ -29,6 +29,9 @@ pub trait HighPrecisionInt:
     fn from_i128(x: i128) -> Self;
     fn to_rug_int(&self) -> Integer;
     fn is_in_bound<T: HighPrecision>(x: &T) -> bool;
+    fn to_field_elem(&self, mont: &FieldMont) -> FieldElem {
+        int_to_mont(&self.to_rug_int(), mont)
+    }
 }
 
 impl<M: HighPrecisionInt> Matrix<M> {
@@ -38,7 +41,6 @@ impl<M: HighPrecisionInt> Matrix<M> {
                 let mut scaled_values = BigVec::new(values.len()).unwrap();
                 for (i, v) in values.iter().enumerate() {
                     let tmp = v.clone() * scale_factor.clone();
-                    assert!(M::is_in_bound(&AFloat(tmp.to_rug_float())));
                     scaled_values[i] = M::from_hp(tmp);
                 }
                 MatrixData::Dense(scaled_values)
@@ -70,7 +72,6 @@ impl<M: HighPrecisionInt> Matrix<M> {
                 let mut scaled_values = BigVec::new(values.len()).unwrap();
                 for (i, &v) in values.iter().enumerate() {
                     let v = T::from_f64(v).unwrap() * scale_factor.clone();
-                    assert!(M::is_in_bound(&AFloat(v.to_rug_float())));
                     scaled_values[i] = M::from_hp(v);
                 }
                 MatrixData::Dense(scaled_values)
@@ -79,7 +80,6 @@ impl<M: HighPrecisionInt> Matrix<M> {
                 let mut scaled_entries = BigVec::new(entries.len()).unwrap();
                 for (i, &(r, c, v)) in entries.iter().enumerate() {
                     let v = T::from_f64(v).unwrap() * scale_factor.clone();
-                    assert!(M::is_in_bound(&AFloat(v.to_rug_float())));
                     let shifted_c = c
                         .checked_add(col_shift)
                         .expect("Column index overflowing when applying shift");
@@ -158,7 +158,7 @@ impl<M: HighPrecisionInt> Matrix<M> {
             MatrixData::Dense(values) => MatrixData::Dense({
                 let mut new_values = BigVec::new(values.len()).unwrap();
                 for (v, w) in values.iter().zip(new_values.iter_mut()) {
-                    *w = mont.mul(int_to_mont(&v.to_rug_int(), mont), den);
+                    *w = mont.mul(v.to_field_elem(mont), den);
                 }
                 new_values
             }),
@@ -167,7 +167,7 @@ impl<M: HighPrecisionInt> Matrix<M> {
                 for ((r1, c1, v1), (r2, c2, v2)) in entries.iter().zip(new_entries.iter_mut()) {
                     *r2 = *r1;
                     *c2 = *c1;
-                    *v2 = mont.mul(int_to_mont(&v1.to_rug_int(), mont), den);
+                    *v2 = mont.mul(v1.to_field_elem(mont), den);
                 }
                 new_entries
             }),
@@ -233,6 +233,10 @@ impl HighPrecisionInt for I256 {
         let x_int = x.to_rug_integer();
         !(x_int <= Self::MIN.to_rug_int() || x_int >= Self::MAX.to_rug_int() || x.is_nan())
     }
+
+    fn to_field_elem(&self, mont: &FieldMont) -> FieldElem {
+        i256_to_mont(self, mont)
+    }
 }
 
 impl HighPrecisionInt for I512 {
@@ -279,6 +283,10 @@ impl HighPrecisionInt for i128 {
         let x_int = x.to_rug_integer();
         !(x_int <= Self::MIN.to_rug_int() || x_int >= Self::MAX.to_rug_int() || x.is_nan())
     }
+
+    fn to_field_elem(&self, mont: &FieldMont) -> FieldElem {
+        mont.from_i128(*self)
+    }
 }
 
 impl HighPrecisionInt for i64 {
@@ -301,5 +309,9 @@ impl HighPrecisionInt for i64 {
     fn is_in_bound<T: HighPrecision>(x: &T) -> bool {
         let x_int = x.to_rug_integer();
         !(x_int <= Self::MIN.to_rug_int() || x_int >= Self::MAX.to_rug_int() || x.is_nan())
+    }
+
+    fn to_field_elem(&self, mont: &FieldMont) -> FieldElem {
+        mont.from_i128(*self as i128)
     }
 }

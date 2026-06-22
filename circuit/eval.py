@@ -1,3 +1,7 @@
+import argparse
+import statistics
+import time
+
 import onnxruntime as ort
 import numpy as np
 import onnx
@@ -11,7 +15,6 @@ PRECISION_OPS = (onnx.TensorProto.FLOAT, onnx.TensorProto.DOUBLE)
 def load_onnx_model(model_path):
     model = onnx.load(model_path)
     # onnx.checker.check_model(model)
-    print("Model loaded and checked.")
     return model
 
 
@@ -48,38 +51,59 @@ def random_input(inference_session, input_data):
 
 
 def evaluate_onnx_model(model_or_path, input_data=None, sess_options=None):
-    if isinstance(model_or_path, str):
-        session = ort.InferenceSession(
-            model_or_path, sess_options=sess_options, providers=["CPUExecutionProvider"]
-        )
-    else:
-        session = ort.InferenceSession(
-            model_or_path.SerializeToString(),
-            sess_options=sess_options,
-            providers=["CPUExecutionProvider"],
-        )
+    session = create_session(model_or_path, sess_options=sess_options)
     input_feed = random_input(session, input_data)
     outputs = session.run(None, input_feed)
     return outputs, input_feed
 
 
-def bench_evaluate_onnx_model(model_or_path, sess_options=None, input_data=None):
+def create_session(model_or_path, sess_options=None):
     if isinstance(model_or_path, str):
-        session = ort.InferenceSession(
+        return ort.InferenceSession(
             model_or_path, sess_options=sess_options, providers=["CPUExecutionProvider"]
         )
-    else:
-        session = ort.InferenceSession(
-            model_or_path.SerializeToString(),
-            sess_options=sess_options,
-            providers=["CPUExecutionProvider"],
-        )
+    return ort.InferenceSession(
+        model_or_path.SerializeToString(),
+        sess_options=sess_options,
+        providers=["CPUExecutionProvider"],
+    )
+
+
+def bench_evaluate_onnx_model(model_or_path, sess_options=None, input_data=None):
+    session = create_session(model_or_path, sess_options=sess_options)
     input_feed = random_input(session, input_data)
-    start = time.time()
+    start = time.perf_counter()
     _ = session.run(None, input_feed)
-    end = time.time()
+    end = time.perf_counter()
     # Returns time in milliseconds to run the model, excluding session creation time and input generation time
     return (end - start) * 1000
+
+
+def benchmark_onnx_model(
+    model_or_path,
+    sess_options=None,
+    input_data=None,
+    warmup_samples=1,
+    measured_samples=100,
+    inner_iterations_per_sample=1,
+):
+    session = create_session(model_or_path, sess_options=sess_options)
+    input_feed = random_input(session, input_data)
+
+    for _ in range(warmup_samples):
+        for _ in range(inner_iterations_per_sample):
+            _ = session.run(None, input_feed)
+
+    sample_times_ms = []
+    for _ in range(measured_samples):
+        start = time.perf_counter()
+        for _ in range(inner_iterations_per_sample):
+            _ = session.run(None, input_feed)
+        end = time.perf_counter()
+        sample_times_ms.append(
+            ((end - start) * 1000.0) / inner_iterations_per_sample
+        )
+    return sample_times_ms
 
 
 def model_info(model):
@@ -90,33 +114,45 @@ def model_info(model):
 
 
 if __name__ == "__main__":
-    import sys
-    import time
+    parser = argparse.ArgumentParser()
+    parser.add_argument("export_path")
+    parser.add_argument("batch_size", nargs="?", type=int, default=1)
+    parser.add_argument("--warmup-samples", type=int, default=1)
+    parser.add_argument("--measured-samples", type=int, default=100)
+    parser.add_argument("--inner-iterations", type=int, default=1)
+    args = parser.parse_args()
 
-    if len(sys.argv) < 2:
-        print("Usage: python eval.py <export_path> [batch_size]")
-        sys.exit(1)
-
-    export_path = sys.argv[1]
-    batch_size = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+    export_path = args.export_path
+    batch_size = args.batch_size
     original_model_path = f"{export_path}/original_model.onnx"
     model_name = export_path.split("/")[-1]
-    num_samples = 100
-    
+
     # Turn off all optimizations
     sess_options = ort.SessionOptions()
     sess_options.intra_op_num_threads = 1
     sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_DISABLE_ALL
 
-    total_time = 0
     model = load_onnx_model(original_model_path)
-
-    for _ in range(num_samples):
-        total_time += bench_evaluate_onnx_model(model, sess_options=sess_options)
-
-    total_time /= num_samples
-    total_time *= batch_size
+    sample_times_ms = benchmark_onnx_model(
+        model,
+        sess_options=sess_options,
+        warmup_samples=args.warmup_samples,
+        measured_samples=args.measured_samples,
+        inner_iterations_per_sample=args.inner_iterations,
+    )
+    sample_times_ms = [time_ms * batch_size for time_ms in sample_times_ms]
+    mean_time_ms = statistics.mean(sample_times_ms)
+    stddev_time_ms = statistics.stdev(sample_times_ms) if len(sample_times_ms) > 1 else 0.0
+    stddev_ratio = (stddev_time_ms / mean_time_ms) if mean_time_ms else float("inf")
+    within_5_percent = stddev_ratio <= 0.05 if mean_time_ms else False
 
     print(f"Model: {model_name}")
     print("Batch size:", batch_size)
-    print(f"Inference time: {total_time}ms")
+    print("Warmup samples:", args.warmup_samples)
+    print("Measured samples:", args.measured_samples)
+    print("Inner iterations per sample:", args.inner_iterations)
+    print(f"Inference time mean: {mean_time_ms}ms")
+    print(f"Inference time stddev: {stddev_time_ms}ms")
+    print(f"Stddev / mean: {stddev_ratio}")
+    print(f"Within 5% of mean: {within_5_percent}")
+    print(f"Inference time: {mean_time_ms}ms")

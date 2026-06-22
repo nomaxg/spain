@@ -1,0 +1,3 @@
+[submodule "spartan-zkinterface"]
+	path = spartan-zkinterface
+	url = git@github.com:nomaxg/spartan-zkinterface.git

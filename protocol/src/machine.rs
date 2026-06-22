@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use crate::broker::Broker;
 use anyhow::{Result, anyhow};
 
@@ -64,27 +66,41 @@ where
 
 // Runs a single protocol actor against a broker. The actor can be configured to
 // initiate the protocol or wait for the first message.
-pub fn run_actor<M, A, B>(actor: &mut A, mut broker: B) -> Result<()>
+// Returns bytes sent, time spent, time spent on serialization
+pub fn run_actor<M, A, B>(actor: &mut A, mut broker: B) -> Result<(usize, Duration, Duration)>
 where
     A: ProtocolState<M>,
     B: Broker<M>,
     M: std::fmt::Debug,
 {
+    let mut serialization_time = Duration::ZERO;
+    let mut time_spent = Duration::ZERO;
+    let mut bytes_sent = 0;
     if let Ok(msg) = actor.init_message() {
-        broker.send_msg(&msg)?;
+        let (bytes_sent_, serialization_time_) = broker.send_msg(&msg)?;
+        bytes_sent += bytes_sent_;
+        serialization_time += serialization_time_;
     }
 
     loop {
-        let received = match broker.receive_msg() {
+        let (received, serialization_time_) = match broker.receive_msg() {
             Ok(msg) => msg,
             Err(_) => {
-                return Ok(());
+                return Ok((bytes_sent, time_spent, serialization_time));
             }
         };
-        let Some(response) = actor.handle_message(&received) else {
-            return Ok(());
+        serialization_time += serialization_time_;
+
+        let timer = Instant::now();
+        let response = actor.handle_message(&received);
+        time_spent += timer.elapsed();
+        let Some(response) = response else {
+            return Ok((bytes_sent, time_spent, serialization_time));
         };
-        broker.send_msg(&response)?;
+
+        let (bytes_sent_, serialization_time_) = broker.send_msg(&response)?;
+        bytes_sent += bytes_sent_;
+        serialization_time += serialization_time_;
     }
 }
 
@@ -191,15 +207,17 @@ mod test {
     }
 
     impl<M: Clone> Broker<M> for MockBroker<M> {
-        fn send_msg(&mut self, msg: &M) -> Result<()> {
+        fn send_msg(&mut self, msg: &M) -> Result<(usize, Duration)> {
             self.sent.borrow_mut().push(msg.clone());
-            Ok(())
+            Ok((1, Duration::ZERO))
         }
 
-        fn receive_msg(&mut self) -> Result<M> {
-            self.incoming
+        fn receive_msg(&mut self) -> Result<(M, Duration)> {
+            let msg = self
+                .incoming
                 .pop_front()
-                .ok_or_else(|| anyhow!("no more incoming messages"))
+                .ok_or_else(|| anyhow!("no more incoming messages"))?;
+            Ok((msg, Duration::ZERO))
         }
     }
 

@@ -11,7 +11,10 @@ use dark::{
     prover::{ProverState as DarkProverState, RoundClaim},
     verifier::RoundChallenge,
 };
-use ff::{FieldElem, FieldMont, inner2::InnerPoly, outer::OuterPoly};
+use ff::{
+    FieldElem, FieldMont, inner2::InnerPoly, outer::OuterPoly, outer_eq::OuterPolyEq,
+    poly::cmont::MLE,
+};
 use i256::{I512, I1024};
 use iop::prover::ProverState as SCProverState;
 use model::HighPrecision;
@@ -20,17 +23,18 @@ use parse::{
     mat::{Matrix, MatrixData},
 };
 use rug::Integer;
+use stream::bigvec::BigVec;
 
 pub use crate::simulate::{simulate, simulate_hp};
 
 pub struct ProverState<
-    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512 + ToI1024,
+    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512,
     P: HighPrecision,
     E: R1CSInstance<P, T>,
 > where
     Matrix<T>: MatrixIntOps,
 {
-    pub error: Option<I1024>,
+    pub error: Option<I512>,
     pub scale_factor: P,
     pub batch_size: usize,
     pub metadata: Metadata,
@@ -46,20 +50,76 @@ pub struct ProverState<
     pub dark_prover: DarkProverState,
     pub scale_den: Option<FieldElem>,
     pub mont: Option<FieldMont>,
-    pub outer_prover: Option<SCProverState<OuterPoly>>,
+    pub spartan_poly: bool,
+    pub outer_prover: Option<OuterProverState>,
     pub inner_prover: Option<SCProverState<InnerPoly>>,
     _phantom: std::marker::PhantomData<P>,
 }
 
+pub enum OuterProverState {
+    Spain(SCProverState<OuterPoly>),
+    Spartan(SCProverState<OuterPolyEq>),
+}
+
+impl OuterProverState {
+    fn prove_round(&mut self, r: Option<FieldElem>) -> Vec<FieldElem> {
+        match self {
+            Self::Spain(state) => state.prove_round(r),
+            Self::Spartan(state) => state.prove_round(r),
+        }
+    }
+
+    fn final_evals(&mut self, r: FieldElem) -> Vec<FieldElem> {
+        match self {
+            Self::Spain(state) => state.final_evals(r),
+            Self::Spartan(state) => state.final_evals(r),
+        }
+    }
+
+    fn last_round(&self) -> bool {
+        match self {
+            Self::Spain(state) => state.last_round(),
+            Self::Spartan(state) => state.last_round(),
+        }
+    }
+
+    pub fn simulate(
+        &mut self,
+        sum: FieldElem,
+        aux: &[FieldElem],
+        verbose: bool,
+    ) -> (
+        Vec<FieldElem>,
+        Vec<FieldElem>,
+        iop::prover::EvaluationResult,
+    ) {
+        match self {
+            Self::Spain(state) => state.simulate(sum, aux, verbose),
+            Self::Spartan(state) => state.simulate(sum, aux, verbose),
+        }
+    }
+}
+
 impl<
-    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512 + ToI1024,
+    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512,
     E: R1CSInstance<P, T>,
     P: HighPrecision,
 > ProverState<T, P, E>
 where
     Matrix<T>: MatrixIntOps,
 {
-    pub fn new(wit_exec: E, scale_factor: P, metadata: Metadata, batch_size: usize) -> Self {
+    pub fn new(
+        wit_exec: E,
+        scale_factor: P,
+        metadata: Metadata,
+        batch_size: usize,
+        spartan_poly: bool,
+    ) -> Self {
+        let scale_factor = if spartan_poly {
+            P::from_i128(1).unwrap()
+        } else {
+            scale_factor
+        };
         let mut ret = Self {
             error: None,
             metadata,
@@ -78,6 +138,7 @@ where
             dark_prover: DarkProverState::default(),
             scale_den: None,
             mont: None,
+            spartan_poly,
             r_outer: Vec::new(),
             _phantom: std::marker::PhantomData::<P>,
         };
@@ -144,7 +205,11 @@ where
         );
     }
 
-    pub fn set_randomness(&mut self, randomness: Vec<P>) {
+    pub fn set_randomness(&mut self, randomness: Vec<u64>) {
+        let randomness = randomness
+            .into_iter()
+            .map(|v| P::from_f64(f64::from_bits(v)).unwrap())
+            .collect::<Vec<_>>();
         self.randomness = Some(randomness);
     }
 
@@ -157,12 +222,15 @@ where
         self.witness = Some(witness);
     }
 
-    pub fn compute_squared_error(&mut self) -> I1024 {
+    pub fn compute_squared_error(&mut self) -> I512 {
+        if self.spartan_poly {
+            return I512::from(0);
+        }
         let witness = self
             .witness
             .as_ref()
             .expect("witness must be computed before computing error");
-        let error = compute_squared_error_i1024(
+        let error = compute_squared_error(
             self.r1cs_matrices_int
                 .as_ref()
                 .expect("R1CS matrices must be set before computing error"),
@@ -197,10 +265,7 @@ where
         )
     }
 
-    pub fn witness_openings(&self) -> Vec<ZRangeOpening>
-    where
-        T: Into<i128>,
-    {
+    pub fn witness_openings(&self) -> Vec<ZRangeOpening<T>> {
         let z_int = self
             .witness
             .as_ref()
@@ -213,7 +278,7 @@ where
             .map(|(i, range)| ZRangeOpening {
                 range_index: i,
                 width: z_int.width(),
-                values: extract_dense_rows_i128(z_int, range),
+                values: extract_dense_rows(z_int, range),
             })
             .collect()
     }
@@ -271,6 +336,7 @@ where
             self.witness_mont
                 .as_ref()
                 .expect("Witness mont should be generated"),
+            self.spartan_poly,
             true,
         );
         self.outer_prover = Some(sc_state);
@@ -376,9 +442,9 @@ where
     }
 }
 
-fn extract_dense_rows_i128<T>(mat: &Matrix<T>, row_range: &std::ops::Range<usize>) -> Vec<i128>
+fn extract_dense_rows<T>(mat: &Matrix<T>, row_range: &std::ops::Range<usize>) -> Vec<T>
 where
-    T: Copy + Clone + Default + PartialEq + Into<i128>,
+    T: Copy + Clone + Default + PartialEq,
 {
     match mat.data() {
         MatrixData::Dense(values) => {
@@ -387,7 +453,7 @@ where
             for r in row_range.clone() {
                 let base = r * width;
                 for c in 0..width {
-                    out.push(values[base + c].into());
+                    out.push(values[base + c]);
                 }
             }
             out
@@ -446,7 +512,7 @@ where
     out
 }
 
-fn mul_to_vec_i1024<T>(a: &Matrix<T>, z: &Matrix<T>) -> Vec<I1024>
+pub fn mul_to_vec_i1024<T>(a: &Matrix<T>, z: &Matrix<T>) -> Vec<I1024>
 where
     T: Copy + Clone + Default + PartialEq + ToI1024,
 {
@@ -530,34 +596,6 @@ where
         .fold(I512::from(0), |acc, x| acc + x)
 }
 
-pub fn compute_squared_error_i1024<T>(
-    tensors: &R1CSMatrices<T>,
-    z: &Matrix<T>,
-    scale_factor: &I512,
-    verbose: bool,
-) -> I1024
-where
-    T: Copy + Clone + Default + PartialEq + ToI1024 + Debug,
-{
-    // get scale factor squared in wide integer form
-    if verbose {
-        eprintln!("Computing squared error");
-    }
-    let scale_squared =
-        I1024::from_str_radix((*scale_factor * *scale_factor).to_string().as_str(), 10).unwrap();
-    let az = mul_to_vec_i1024(&tensors.a, z);
-    let bz = mul_to_vec_i1024(&tensors.b, z);
-    let cz = mul_to_vec_i1024(&tensors.c, z);
-    az.iter()
-        .zip(bz.iter())
-        .zip(cz.iter())
-        .map(|((a, b), c)| {
-            let error = (*a * *b) - (*c * scale_squared);
-            error * error
-        })
-        .fold(I1024::from(0), |acc, x| acc + x)
-}
-
 pub fn compute_squared_error_hp<T>(
     tensors: &R1CSMatrices<T>,
     z: &Matrix<T>,
@@ -591,25 +629,6 @@ where
 pub fn error_to_mont(
     mont: &FieldMont,
     error: I512,
-    scale_mont: FieldElem,
-    verbose: bool,
-) -> FieldElem {
-    if verbose {
-        eprintln!("Converting error to montgomery form");
-    }
-    let error_int = Integer::from_str_radix(error.to_string().as_str(), 10).unwrap();
-    let modulus_int = Integer::from(mont.modulus());
-    let num = mont.from_bigint(error_int % modulus_int);
-    let mut den = scale_mont;
-    den = mont.sqr(den); // scale^2
-    den = mont.sqr(den); // scale^4
-    den = mont.sqr(den); // scale^8
-    mont.div(num, den) // error is num / den
-}
-
-pub fn error_to_mont_i1024(
-    mont: &FieldMont,
-    error: I1024,
     scale_mont: FieldElem,
     verbose: bool,
 ) -> FieldElem {
@@ -676,17 +695,58 @@ pub fn prepare_outer_sum_check(
     mont: &FieldMont,
     tensors: &R1CSMatrices<FieldElem>,
     z: &Matrix<FieldElem>,
-    // ranges: &Vec<Range<usize>>, TO DO, Add in if we add in SPARK and split A0, A1, etc.
+    spartan_poly: bool,
     verbose: bool,
-) -> SCProverState<OuterPoly> {
+) -> OuterProverState {
     if verbose {
         eprintln!("Preparing outer sum-check");
     }
     let az = tensors.a.mont_mul(z, mont).to_mle(mont);
     let bz = tensors.b.mont_mul(z, mont).to_mle(mont);
     let cz = tensors.c.mont_mul(z, mont).to_mle(mont);
-    let prover_poly = OuterPoly::from_buffers(az, bz, cz);
-    SCProverState::new(prover_poly, *mont)
+    if spartan_poly {
+        let num_constraints_pre_pad = tensors.a.height();
+        eprintln!(
+            "For outer sc, padding synthetic constraints from: {} to {}",
+            num_constraints_pre_pad,
+            num_constraints_pre_pad.next_power_of_two()
+        );
+        let az = pad_outer(az, mont);
+        let bz = pad_outer(bz, mont);
+        let cz = pad_outer(cz, mont);
+        let tau = deterministic_tau(mont, az.num_vars());
+        let prover_poly = OuterPolyEq::from_buffers(az, bz, cz, &tau, mont);
+        OuterProverState::Spartan(SCProverState::new(prover_poly, *mont))
+    } else {
+        let prover_poly = OuterPoly::from_buffers(az, bz, cz);
+        OuterProverState::Spain(SCProverState::new(prover_poly, *mont))
+    }
+}
+
+pub fn deterministic_tau(mont: &FieldMont, len: usize) -> Vec<FieldElem> {
+    (1..=len)
+        .map(|i| mont.to_mont(i as u128))
+        .collect::<Vec<_>>()
+}
+
+fn pad_outer(mle: ff::poly::cmont::MLE, mont: &FieldMont) -> ff::poly::cmont::MLE {
+    let num_vars = mle.num_vars();
+    let dense_len = 1usize << num_vars;
+    let mut dense = BigVec::new(dense_len).unwrap();
+    for i in 0..dense_len {
+        dense[i] = mont.zero();
+    }
+
+    let mut src = 0usize;
+    for range in &mle.ranges {
+        for dst in range.clone() {
+            dense[dst] = mle.evals[src];
+            src += 1;
+        }
+    }
+    assert_eq!(src, mle.evals.len(), "invalid sparse MLE layout");
+
+    MLE::from_buffer(dense, vec![0..dense_len])
 }
 
 // Given a, b, c, z, r1, r2, r_outer, get cx1 * a, r1 * cx1 * b, r2 * cx1 * c, cx2 * z to prepare to run inner sum-check protocol (interactively) which will return get back r_inner: Vec<FieldElem> and claims for a(r_inner, r_outer), r1b(r_inner, r_outer), r2c(r_inner, r_outer), z(r_inner)

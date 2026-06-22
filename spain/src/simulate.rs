@@ -3,19 +3,17 @@
 use std::{fmt::Debug, time::Instant};
 
 use crate::{
+    EvaluationResult,
     inputs::{Metadata, R1CSMatrices},
     prover::{
-        compute_squared_error, compute_squared_error_i1024, convert_instance_to_mont,
-        error_to_mont, error_to_mont_i1024, limbs_to_u128, prepare_inner_sum_check,
-        prepare_outer_sum_check, scale_factor, ProverState,
+        ProverState, compute_squared_error, convert_instance_to_mont, error_to_mont, limbs_to_u128,
+        prepare_inner_sum_check, prepare_outer_sum_check, scale_factor,
     },
     timer::{ProverPhase, Timer, VerifierPhase},
-    traits::{MatrixIntOps, R1CSInstance, ToI1024, ToI512},
+    traits::{MatrixIntOps, R1CSInstance, ToI512},
     verifier::{
-        check_final_claim, check_r1cs_claim, epsilon_check, epsilon_check_i1024, smart_r1cs_eval,
-        VerifierState,
+        VerifierState, check_final_claim, check_r1cs_claim, epsilon_check, smart_r1cs_eval,
     },
-    EvaluationResult,
 };
 use dark::DARK;
 use i256::I512;
@@ -30,6 +28,7 @@ pub struct SpainConfig {
     pub precision: u16,
     pub q_bits: usize,
     pub batch_size: usize,
+    pub spartan_poly: bool,
 }
 
 impl Default for SpainConfig {
@@ -41,6 +40,7 @@ impl Default for SpainConfig {
             precision: 128,
             q_bits: 30_000,
             batch_size: 1,
+            spartan_poly: false,
         }
     }
 }
@@ -57,7 +57,7 @@ pub fn simulate_hp<T>(
     verbose: bool,
     eval_result: &mut EvaluationResult,
 ) where
-    T: Copy + Clone + Default + PartialEq + ToI512 + Debug + HighPrecisionInt + ToI1024,
+    T: Copy + Clone + Default + PartialEq + ToI512 + Debug + HighPrecisionInt,
     Matrix<T>: MatrixIntOps,
 {
     let protocol_start = std::time::Instant::now();
@@ -65,13 +65,13 @@ pub fn simulate_hp<T>(
     // Compute squared error
     let error_start = std::time::Instant::now();
     let scale_factor_int = I512::from(1u64) << (scale_factor_bits as u32);
-    let error = compute_squared_error_i1024(tensors, z, &scale_factor_int, verbose);
+    let error = compute_squared_error(tensors, z, &scale_factor_int, verbose);
     eval_result.prover_compute_square_error_time = error_start.elapsed();
 
     // First, the verifier asserts that the constraint deviation (l_inf norm of error, bounded by
     // l2 norm) is sufficiently low
     let verifier_epsilon_check_start = std::time::Instant::now();
-    epsilon_check_i1024(&error, scale_factor_bits, max_epsilon, verbose);
+    epsilon_check(&error, scale_factor_bits, max_epsilon, verbose);
     eval_result.verifier_epsilon_check_time = verifier_epsilon_check_start.elapsed();
 
     if verbose {
@@ -82,13 +82,7 @@ pub fn simulate_hp<T>(
     let prover_comm_start = std::time::Instant::now();
     let has_secondary_constraints = metadata.num_secondary_constraint_variables > 0;
     let has_randomness = metadata.num_random_values > 0;
-    let num_range_variables: usize = {
-        if has_randomness {
-            2
-        } else {
-            1
-        }
-    };
+    let num_range_variables: usize = { if has_randomness { 2 } else { 1 } };
     let ranges = metadata.get_ranges();
     let w_mle = z.extract_rows_to_mle(Some(&ranges[1]));
     let commit_time = std::time::Instant::now();
@@ -111,9 +105,9 @@ pub fn simulate_hp<T>(
 
     // Prover prepares the outer sum check
     let outer_prep_start = std::time::Instant::now();
-    let error_mont = error_to_mont_i1024(&mont, error, scale_mont, verbose);
+    let error_mont = error_to_mont(&mont, error, scale_mont, verbose);
     let (tensors_mont, z_mont) = convert_instance_to_mont(&mont, tensors, z, scale_den, verbose);
-    let mut prover_state = prepare_outer_sum_check(&mont, &tensors_mont, &z_mont, verbose);
+    let mut prover_state = prepare_outer_sum_check(&mont, &tensors_mont, &z_mont, false, verbose);
     eval_result.prover_prepare_outer_sc_time = outer_prep_start.elapsed();
 
     // Prover and verifier run the outer sum check
@@ -236,13 +230,7 @@ pub fn simulate<T>(
     let prover_comm_start = std::time::Instant::now();
     let has_secondary_constraints = metadata.num_secondary_constraint_variables > 0;
     let has_randomness = metadata.num_random_values > 0;
-    let num_range_variables: usize = {
-        if has_randomness {
-            2
-        } else {
-            1
-        }
-    };
+    let num_range_variables: usize = { if has_randomness { 2 } else { 1 } };
     let ranges = metadata.get_ranges();
     let w_mle = z.extract_rows_to_mle(&ranges[1]);
     let commit_time = std::time::Instant::now();
@@ -267,7 +255,7 @@ pub fn simulate<T>(
     let outer_prep_start = std::time::Instant::now();
     let error_mont = error_to_mont(&mont, error, scale_mont, verbose);
     let (tensors_mont, z_mont) = convert_instance_to_mont(&mont, tensors, z, scale_den, verbose);
-    let mut prover_state = prepare_outer_sum_check(&mont, &tensors_mont, &z_mont, verbose);
+    let mut prover_state = prepare_outer_sum_check(&mont, &tensors_mont, &z_mont, false, verbose);
     eval_result.prover_prepare_outer_sc_time = outer_prep_start.elapsed();
 
     // Prover and verifier run the outer sum check
@@ -352,30 +340,35 @@ pub fn simulate<T>(
     eval_result.total_protocol_time = protocol_start.elapsed();
 }
 
-pub fn stateful_simulate<P, E>(wit_exec: E, config: Option<SpainConfig>) -> EvaluationResult
+pub fn stateful_simulate<P, E, T>(wit_exec: E, config: Option<SpainConfig>) -> EvaluationResult
 where
     P: HighPrecision,
-    E: R1CSInstance<P, i128> + Clone,
+    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512,
+    E: R1CSInstance<P, T> + Clone,
+    Matrix<T>: MatrixIntOps,
 {
     stateful_simulate_with_config(wit_exec, config.unwrap_or_default())
 }
 
-pub fn measure_setup_time<P, E>(wit_exec: E, config: SpainConfig)
+pub fn measure_setup_time<P, E, T>(wit_exec: E, config: SpainConfig)
 where
     P: HighPrecision,
-    E: R1CSInstance<P, i128> + Clone,
+    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512,
+    E: R1CSInstance<P, T> + Clone,
+    Matrix<T>: MatrixIntOps,
 {
     let metadata = wit_exec.get_meta();
     let scale_factor: P = scale_factor(config.scale_factor_bits);
     let verifier_setup_start = Instant::now();
 
-    let mut verifier: VerifierState<i128, P, E> = VerifierState::new(
+    let mut verifier: VerifierState<T, P, E> = VerifierState::new(
         config.max_epsilon,
         config.batch_size,
         config.scale_factor_bits,
         config.q_bits,
         config.precision,
         config.num_chunks,
+        config.spartan_poly,
         wit_exec.clone(),
         metadata.clone(),
     );
@@ -388,8 +381,13 @@ where
 
     let prover_setup_start = Instant::now();
 
-    let mut prover: ProverState<i128, P, E> =
-        ProverState::new(wit_exec, scale_factor, metadata, config.batch_size);
+    let mut prover: ProverState<T, P, E> = ProverState::new(
+        wit_exec,
+        scale_factor,
+        metadata,
+        config.batch_size,
+        config.spartan_poly,
+    );
 
     let randomness = verifier.sample_normal_randomness();
     prover.set_randomness(randomness);
@@ -404,28 +402,32 @@ where
     println!("Verifier setup time: {:?}", verifier_setup_time);
 }
 
-pub fn stateful_simulate_with_config<P, E>(wit_exec: E, config: SpainConfig) -> EvaluationResult
+pub fn stateful_simulate_with_config<P, E, T>(wit_exec: E, config: SpainConfig) -> EvaluationResult
 where
     P: HighPrecision,
-    E: R1CSInstance<P, i128> + Clone,
+    T: Clone + Default + Debug + PartialEq + HighPrecisionInt + ToI512,
+    E: R1CSInstance<P, T> + Clone,
+    Matrix<T>: MatrixIntOps,
 {
     let metadata = wit_exec.get_meta();
     let scale_factor: P = scale_factor(config.scale_factor_bits);
 
-    let mut prover: ProverState<i128, P, E> = ProverState::new(
+    let mut prover: ProverState<T, P, E> = ProverState::new(
         wit_exec.clone(),
         scale_factor,
         metadata.clone(),
         config.batch_size,
+        config.spartan_poly,
     );
 
-    let mut verifier: VerifierState<i128, P, E> = VerifierState::new(
+    let mut verifier: VerifierState<T, P, E> = VerifierState::new(
         config.max_epsilon,
         config.batch_size,
         config.scale_factor_bits,
         config.q_bits,
         config.precision,
         config.num_chunks,
+        config.spartan_poly,
         wit_exec,
         metadata,
     );
@@ -551,8 +553,8 @@ where
 mod simulate_single_tests {
     use model::F128;
 
-    use crate::inputs::{import_metadata, DEFAULT_DATA_DIR};
-    use crate::simulate::{stateful_simulate, SpainConfig};
+    use crate::inputs::{DEFAULT_DATA_DIR, import_metadata};
+    use crate::simulate::{SpainConfig, stateful_simulate};
     use crate::synthetic::SyntheticR1CS;
     use crate::witness_gen::OnnxExecutor;
     use std::path::PathBuf;
@@ -561,10 +563,11 @@ mod simulate_single_tests {
     fn test_stateful_simulate_synthetic_r1cs() {
         let mut config = SpainConfig::default();
         config.num_chunks = 4;
+        config.spartan_poly = true;
         let num_cons = 123456;
         let num_inputs = 10;
         let wit_exec = SyntheticR1CS::<i128>::new(num_cons, num_inputs, config.scale_factor_bits);
-        let result = stateful_simulate::<F128, _>(wit_exec, Some(config));
+        let result = stateful_simulate::<F128, _, i128>(wit_exec, Some(config));
         dbg!(&result);
         assert_eq!(result.num_constraints, num_cons);
     }
@@ -576,7 +579,7 @@ mod simulate_single_tests {
         let metadata = import_metadata(&path, model);
         let wit_exec =
             OnnxExecutor::<F128>::new(model.to_string(), path.clone(), metadata.clone(), true);
-        let result = stateful_simulate(wit_exec, None);
+        let result = stateful_simulate::<F128, _, i128>(wit_exec, None);
         dbg!(result);
     }
 
@@ -588,7 +591,7 @@ mod simulate_single_tests {
         let metadata = import_metadata(&path, model);
         let wit_exec =
             OnnxExecutor::<F128>::new(model.to_string(), path.clone(), metadata.clone(), true);
-        dbg!(stateful_simulate(wit_exec, None));
+        dbg!(stateful_simulate::<F128, _, i128>(wit_exec, None));
     }
 
     #[test]
@@ -598,15 +601,15 @@ mod simulate_single_tests {
         let metadata = import_metadata(&path, model);
         let wit_exec =
             OnnxExecutor::<F128>::new(model.to_string(), path.clone(), metadata.clone(), true);
-        dbg!(stateful_simulate(wit_exec, None));
+        dbg!(stateful_simulate::<F128, _, i128>(wit_exec, None));
     }
 }
 #[cfg(test)]
 mod simulate_batched_tests {
     use model::F128;
 
-    use crate::inputs::{import_metadata, DEFAULT_DATA_DIR};
-    use crate::simulate::{stateful_simulate, SpainConfig};
+    use crate::inputs::{DEFAULT_DATA_DIR, import_metadata};
+    use crate::simulate::{SpainConfig, stateful_simulate};
     use crate::witness_gen::OnnxExecutor;
     use std::path::PathBuf;
 
@@ -619,7 +622,7 @@ mod simulate_batched_tests {
             OnnxExecutor::<F128>::new(model.to_string(), path.clone(), metadata.clone(), true);
         let mut config = SpainConfig::default();
         config.batch_size = 2;
-        let result = stateful_simulate(wit_exec, Some(config));
+        let result = stateful_simulate::<F128, _, i128>(wit_exec, Some(config));
         dbg!(result);
     }
 
@@ -632,7 +635,7 @@ mod simulate_batched_tests {
             OnnxExecutor::<F128>::new(model.to_string(), path.clone(), metadata.clone(), true);
         let mut config = SpainConfig::default();
         config.batch_size = 2;
-        let result = stateful_simulate(wit_exec, Some(config));
+        let result = stateful_simulate::<F128, _, i128>(wit_exec, Some(config));
         dbg!(result);
     }
 }

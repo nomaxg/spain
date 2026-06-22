@@ -1,4 +1,4 @@
-use ff::{FieldElem, FieldMont, inner2::InnerPoly, outer::OuterPoly};
+use ff::{FieldElem, FieldMont, inner2::InnerPoly, outer::OuterPoly, outer_eq::OuterPolyEq};
 
 // multivariate polynomial in the context of the sum-check protocol
 pub trait SumCheckPoly {
@@ -76,5 +76,32 @@ impl SumCheckPoly for InnerPoly {
         evals: &[FieldElem],
     ) -> Result<(), String> {
         InnerPoly::check_final_evals(mont, p, r, aux, evals)
+    }
+}
+
+impl SumCheckPoly for OuterPolyEq {
+    fn degree(&self) -> usize {
+        self.degree()
+    }
+    fn num_vars(&self) -> usize {
+        self.num_vars()
+    }
+    fn as_poly(&self, mont: &FieldMont) -> Vec<FieldElem> {
+        self.as_poly(mont)
+    }
+    fn bind(&mut self, x: FieldElem, mont: &FieldMont) {
+        self.bind(x, mont);
+    }
+    fn final_evals(&self) -> Vec<FieldElem> {
+        self.final_evals()
+    }
+    fn check_final_evals(
+        mont: &FieldMont,
+        p: &[FieldElem],
+        r: FieldElem,
+        aux: &[FieldElem],
+        evals: &[FieldElem],
+    ) -> Result<(), String> {
+        OuterPolyEq::check_final_evals(mont, p, r, aux, evals)
     }
 }

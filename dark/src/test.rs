@@ -57,6 +57,7 @@ impl MockDARK {
 
 // Simple simulate method (more of a smoke test) with coupled prover/verifier logic
 // for DARK evaluation protocol
+#[allow(clippy::too_many_arguments)]
 pub fn simulate_simple<R: Rng>(
     chunked_comm: ChunkedComm,
     int_poly: IntMLE,
@@ -103,7 +104,7 @@ pub fn simulate_simple<R: Rng>(
 
         // Split poly
         let prover_start = Instant::now();
-        let (fl, fr, fl_int, fr_int) = prover.poly_split(&public);
+        let (fl, fr, fl_int, fr_int) = prover.poly_split(public);
         eval_result.poly_split += prover_start.elapsed();
 
         // Determine if this is a verifier-in-head round
@@ -112,7 +113,7 @@ pub fn simulate_simple<R: Rng>(
         // Prover computes Comm(fl) and Comm(fr)
         let (comm_fl, comm_fr) = if verifier_in_head_round {
             let verifier_start = std::time::Instant::now();
-            let (cl, cr) = verifier.get_derived_comms(&public);
+            let (cl, cr) = verifier.get_derived_comms(public);
             total_verifier_time += verifier_start.elapsed();
             (cl, cr)
         } else {
@@ -124,7 +125,7 @@ pub fn simulate_simple<R: Rng>(
 
         // Prover computes y_l, y_r
         let prover_start = Instant::now();
-        let (y_l, y_r) = prover.poly_split_eval(&fl, &fr, &public);
+        let (y_l, y_r) = prover.poly_split_eval(&fl, &fr, public);
         eval_result.poly_eval += prover_start.elapsed();
 
         // Verifier checks that y = y_l + X_2 * y_r
@@ -135,7 +136,7 @@ pub fn simulate_simple<R: Rng>(
         // Verifier checks commitment consistency
         if !verifier_in_head_round {
             let verifier_start = std::time::Instant::now();
-            verifier.check_commitment_consistency(comm_fl, comm_fr, &public);
+            verifier.check_commitment_consistency(comm_fl, comm_fr, public);
             total_verifier_time += verifier_start.elapsed();
         }
         // Verifier folds commitments
@@ -206,12 +207,11 @@ pub fn mock_eval_point(mont: &Mont, num_vars: usize) -> Vec<M128> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn test_dark(num_vars: usize) {
+    fn test_dark(num_vars: usize, num_chunks: usize) {
         let mut rng = rand::rng();
 
         // Generate public params
         let q_bits = 30000;
-        let num_chunks = 16;
         let precision = 128;
         let mut public = PublicParams::new(q_bits, num_vars, num_chunks, precision);
 
@@ -242,6 +242,11 @@ mod tests {
     }
     #[test]
     fn smoke_test() {
-        test_dark(10);
+        test_dark(10, 16);
+    }
+
+    #[test]
+    fn smoke_test_single_chunk() {
+        test_dark(10, 1);
     }
 }
