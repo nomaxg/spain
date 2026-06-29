@@ -134,6 +134,7 @@ Feel free to experiment with other ONNX files, support for ONNX is relatively li
 11. ```spain```: Spain protocol implementation. 
 12. ```stream```: Implementation of efficient memory-mapped vectors.
 
+# Licensing
+This repository contains modified code from other projects ([Spartan](https://github.com/microsoft/Spartan), [Arkworks](https://github.com/arkworks-rs)). See [THIRD_PARTY_LICENSES](https://github.com/nomaxg/spain/blob/main/THIRD_PARTY_LICENSES.md) for attribution and licensing information. 
 
-
-
+See [LICENSE](https://github.com/nomaxg/spain/blob/main/LICENSE) for this project's license.  
