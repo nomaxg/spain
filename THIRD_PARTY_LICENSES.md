@@ -7,7 +7,7 @@ arkworks-rs/algebra
 -------------------
 
 Files:
-- `code/dark/src/arith.rs`
+- `dark/src/arith.rs`
 - Portions of `code/dark/src/bigrsa.rs`
 
 Upstream repository:
@@ -39,7 +39,7 @@ microsoft/Spartan
 -----------------
 
 Files:
-- `code/spain/src/synthetic.rs`
+- `spain/src/synthetic.rs`
 
 Upstream repository:
 - <https://github.com/microsoft/Spartan>
