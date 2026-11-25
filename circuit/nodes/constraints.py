@@ -8,6 +8,21 @@ def constrain_unhandled(r1cs, rnode):
     rnode.output = r1cs.allocate_tensor(rnode.shape, ir.VarType.PUBLIC)
 
 
+def constrain_gather(r1cs, rnode):
+    inputs = rnode.node.input
+    if r1cs.nodes.get(inputs[1]).is_var:
+        constrain_unhandled(r1cs, rnode)
+    else:
+        axis = 0
+        for attr in rnode.node.attribute:
+            if attr.name == "axis":
+                axis = attr.i
+        indices = r1cs.nodes.get(inputs[1]).output
+        assert indices.dtype == np.int64
+        _, x = r1cs.get_node(inputs[0])
+        rnode.output = x.take(indices, axis)
+
+
 def constrain_flatten(r1cs, rnode):
     inputs = rnode.node.input
     axis = 1

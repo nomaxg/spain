@@ -77,7 +77,6 @@ def wire_softmax(node, graph):
     )
     new_nodes.append(diff_node_1)
     new_nodes.append(diff_node_2)
-    witness_nodes.append(diff_node_1)
 
     # Compute the square root of the difference.
     sqrt_node = helper.make_node(
@@ -259,33 +258,41 @@ def constrain_softmax(r1cs, rnode):
     input_linmap, linmap_output = r1cs.get_node(inputs[0])
     in_dims = input_linmap.shape
     softmax_degree = len(P) - 1
-    normalized_input = r1cs.allocate_tensor(in_dims, virtual=True)
-    powers_of_x = []
-    previous_powers = normalized_input
+    powers_of_x = [
+        r1cs.allocate_tensor(in_dims, virtual=True)
+        for _ in range(1, softmax_degree)
+    ]
+    iterating_shape = list(in_dims)
+    for i in range(len(iterating_shape)):
+        if i in axes:
+            iterating_shape[i] = 1
+    maxes = r1cs.allocate_tensor(tuple(iterating_shape))
+
+    def normalized_input_values():
+        for coords in np.ndindex(in_dims):
+            max_coords = tuple(
+                0 if i in axes else coord for i, coord in enumerate(coords)
+            )
+            yield linmap_output[coords] - maxes[max_coords]
+
+    # Substitute x - max as a linear combination
+    previous_values = normalized_input_values()
     print("Powers...")
-    for deg in range(1, softmax_degree):
-        x_pow = r1cs.allocate_tensor(in_dims, virtual=True)
+    for deg, x_pow in enumerate(powers_of_x, start=1):
         print(f"  Degree {deg} of {softmax_degree}...")
         constraints = 0
         for prev_val, norm_val, x_val in zip(
-            previous_powers.iter_values(),
-            normalized_input.iter_values(),
+            previous_values,
+            normalized_input_values(),
             x_pow.iter_values(),
         ):
             rnode.append_labeled_constraint(prev_val, norm_val, x_val, "powers of x")
             constraints += 1
             if constraints % 10000 == 0:
                 r1cs.process_constrained_node(rnode)
-        powers_of_x.append(x_pow)
-        previous_powers = x_pow
+        previous_values = x_pow.iter_values()
 
-    iterating_shape = list(in_dims)
-    for i in range(len(iterating_shape)):
-        if i in axes:
-            iterating_shape[i] = 1
-
-    # Allocate tensors for maxes and other intermediate values.
-    maxes = r1cs.allocate_tensor(tuple(iterating_shape))
+    # Allocate tensors for the remaining intermediate values.
     roots = r1cs.allocate_tensor(in_dims, virtual=True)
     indicators = r1cs.allocate_tensor(in_dims, virtual=True)
     approx_e_x = r1cs.allocate_tensor(in_dims, virtual=True)
@@ -299,7 +306,7 @@ def constrain_softmax(r1cs, rnode):
     print("Constrain softmax with rational approximation...")
     constraints = 0
     for norm_val, pow1_val, pow2_val, e_x_val in zip(
-        normalized_input.iter_values(),
+        normalized_input_values(),
         powers_of_x[0].iter_values(),
         powers_of_x[1].iter_values(),
         approx_e_x.iter_values(),

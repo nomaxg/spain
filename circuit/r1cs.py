@@ -1,14 +1,16 @@
 from __future__ import annotations
-from dataclasses import dataclass, field
-from typing import OrderedDict, List, Tuple
-import onnx
+
 import math
+from dataclasses import dataclass, field
+from typing import List, OrderedDict, Tuple
+
 import numpy as np
-import nodes
-from onnx import ModelProto, mapping, helper
-from ir import LinearCombo, VarIdx, VarType, eval_lc, VirtualTensor
 import onnxruntime as ort
-from eval import evaluate_onnx_model, random_input, INFERENCE_TYPE, PRECISION_OPS
+
+import nodes
+from eval import INFERENCE_TYPE, PRECISION_OPS, evaluate_onnx_model, random_input
+from ir import LinearCombo, VarIdx, VarType, VirtualTensor
+from onnx import ModelProto, helper, mapping
 from serializer import Serializer
 
 
@@ -121,7 +123,9 @@ class R1CS:
                 f"{op} constraints not implemented, witness variables associated with this node will be made public"
             )
             nodes.constrain_unhandled(self, node)
-            return 
+            return
+        elif op == "Gather":
+            nodes.constrain_gather(self, node)
         elif op == "Add":
             nodes.constrain_add(self, node)
         elif op == "Sub":
@@ -193,7 +197,7 @@ class R1CS:
                 target_dtype
             )
         if self.num_random_variables > 0:
-            secondary_input_feed[f"R"] = R_tensor
+            secondary_input_feed["R"] = R_tensor
 
         index = 0
         for value in secondary_inputs:

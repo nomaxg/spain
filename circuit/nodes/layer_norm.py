@@ -43,6 +43,7 @@ def wire_layer_norm(node, graph):
     epsilon_name = f"{name}.epsilon"
     var_eps_name = f"{name}.var_eps"
     std_name = f"{name}.std"
+    std_sqrt_name = f"{name}.std_sqrt"
     inv_std_name = f"{name}.inv_std"
     normalized_name = f"{name}.normalized"
     scaled_name = f"{name}.scaled"
@@ -113,6 +114,11 @@ def wire_layer_norm(node, graph):
 
     intermediate_nodes.append(std_node)
 
+    std_sqrt_node = helper.make_node(
+        "Sqrt", inputs=[std_name], outputs=[std_sqrt_name], name=std_sqrt_name
+    )
+    intermediate_nodes.append(std_sqrt_node)
+
     inv_std_node = helper.make_node(
         "Reciprocal", inputs=[std_name], outputs=[inv_std_name], name=inv_std_name
     )
@@ -146,6 +152,7 @@ def wire_layer_norm(node, graph):
         epsilon_node,
         var_eps_node,
         std_node,
+        std_sqrt_node,
         inv_std_node,
         normalized_node,
         scaled_node,
@@ -221,6 +228,16 @@ def constrain_layer_norm(r1cs, rnode):
             reduce_mean_var_sqrt[idx] * centered_squared.shape[axis],
             reduce_mean_variance[idx],
             f"{rnode.node.name}_reduce_mean_var_sqrt_{idx}",
+        )
+
+    # Ensure that std is non-negative with an extra sqrt constraint
+    std_sqrt = r1cs.allocate_tensor(reduce_mean_var_sqrt.shape)
+    for idx in np.ndindex(reduce_mean_var_sqrt.shape):
+        rnode.append_labeled_constraint(
+            std_sqrt[idx],
+            std_sqrt[idx],
+            reduce_mean_var_sqrt[idx],
+            f"{rnode.node.name}_std_nonnegative_{idx}",
         )
 
     inv_std = r1cs.allocate_tensor(reduce_mean_var_sqrt.shape)

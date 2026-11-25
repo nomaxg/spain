@@ -12,7 +12,7 @@ from onnx import numpy_helper
 from r1cs import R1CS, R1CSNode
 
 reshape_ops = ["Split", "Transpose", "Reshape", "Flatten"]
-unhandled_ops = ["Gather"]
+unhandled_ops = []
 
 PUBLIC_LABEL = VarType.PUBLIC.to_str()
 PRIMARY_LABEL = VarType.PRIMARY.to_str()
@@ -155,6 +155,10 @@ def get_r1cs(model, name, full_variable_matmul):
         if op in unhandled_ops:
             meta.is_var = True
             meta.in_wit = True
+        elif op == "Gather":
+            indices = r1cs.nodes.get(inputs[1])
+            meta.is_var = indices.is_var
+            meta.in_wit = indices.is_var
         elif op == "Sin":
             last_node, intermediate_nodes = nodes.wire_sin(node, graph, 0)
             meta.is_var = True
@@ -264,7 +268,9 @@ def get_r1cs(model, name, full_variable_matmul):
         if meta.in_wit:
             for output in meta.node.output:
                 label = PRIMARY_LABEL
-                if meta.op in unhandled_ops:
+                if (meta.op in unhandled_ops) or (
+                    meta.op == "Gather" and meta.in_wit == True
+                ):
                     label = PUBLIC_LABEL
                     r1cs.num_pretermined_public_variables += int(np.prod(meta.shape))
                 append_graph_output(graph, output, label)
